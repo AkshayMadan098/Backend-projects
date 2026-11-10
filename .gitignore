@@ -1,0 +1,41 @@
+# Java & Maven / Gradle
+**/target/
+**/*.class
+**/*.jar
+**/*.war
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# Node.js
+**/node_modules/
+**/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/env/
+
+# Go
+**/bin/
+
+# Databases & Cache
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE & Editor files
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+# Operating System
+.DS_Store
+Thumbs.db
