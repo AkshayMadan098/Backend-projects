@@ -8,11 +8,49 @@ Each project is located in its own self-contained directory with dedicated docum
 
 ## 📂 Projects Catalog
 
-| # | Project | Stack | Key Architectural Features | Status |
-|:---:|:---|:---|:---|:---:|
-| **01** | [**URL Shortener Service**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite**, **Hibernate ORM**, **Docker** | Base62 encoding, SQLite WAL mode, HikariCP pooling, **7,300+ req/sec** stress testing, REST API | ✅ Complete |
-| **02** | **Auth & RBAC Service** | *Coming Soon* | JWT access/refresh rotation, Redis token blacklist, OAuth2 | 🔄 In Progress |
-| **03** | **Real-Time Event Engine** | *Coming Soon* | Kafka / RabbitMQ, WebSocket pub/sub, idempotent consumers | 📋 Planned |
+| # | Project | Stack | Key Architectural Features | Live Demo | Status |
+|:---:|:---|:---|:---|:---:|:---:|
+| **01** | [**URL Shortener Service**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite**, **Hibernate ORM**, **Docker** | Base62 encoding, SQLite WAL mode, HikariCP pooling, **7,300+ req/sec** stress testing, REST API | [**Live API ↗**](https://vyson-url-shortener.onrender.com) | ✅ Complete |
+| **02** | **Auth & RBAC Service** | *Coming Soon* | JWT access/refresh rotation, Redis token blacklist, OAuth2 | — | 🔄 In Progress |
+| **03** | **Real-Time Event Engine** | *Coming Soon* | Kafka / RabbitMQ, WebSocket pub/sub, idempotent consumers | — | 📋 Planned |
+
+---
+
+## 🌐 Live Production Deployment (Project 01)
+
+The URL Shortener API is deployed online on **Render** using Docker and SQLite in WAL mode:
+
+- **Live Service URL:** `https://vyson-url-shortener.onrender.com`
+- **SSL / CDN:** Managed via Cloudflare with automatic HTTPS
+
+### Test the Live API
+
+**1. Shorten a URL:**
+```bash
+curl -X POST https://vyson-url-shortener.onrender.com/shorten \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://github.com/AkshayMadan098/Backend-projects"}'
+```
+Response (`201 Created`):
+```json
+{
+  "shortCode": "iLIq7Qq",
+  "originalUrl": "https://github.com/AkshayMadan098/Backend-projects",
+  "shortUrl": "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq",
+  "createdAt": "2026-11-11T11:00:43.181"
+}
+```
+
+**2. Test Redirection:**
+```bash
+curl -i "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq"
+```
+Response (`302 Found`):
+```http
+HTTP/2 302 
+location: https://github.com/AkshayMadan098/Backend-projects
+```
+*(Or test directly in your browser: [https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq](https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq))*
 
 ---
 
@@ -28,7 +66,7 @@ A high-performance URL shortening and redirection engine designed to handle heav
   - **Embedded SQLite in WAL Mode:** Configured with Write-Ahead Logging (`journal_mode=WAL`) and a 10s busy timeout for non-blocking concurrent reads and writes.
   - **Stress Tested:** Benchmarked with `oha` from 10 to 2,000 concurrent connections, hitting peak throughput of **7,319 requests/sec**.
   - **Automated Integration Tests:** Comprehensive JUnit 5 and MockMvc test coverage.
-  - **Dockerized:** Multi-stage `Dockerfile` ready for deployment on Fly.io, Render, or Railway.
+  - **Dockerized & Cloud Deployed:** Live on Render via multi-stage Alpine Docker container.
 
 ---
 

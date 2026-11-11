@@ -404,27 +404,75 @@ The test suite includes additional edge cases covering real-world vulnerabilitie
 
 ## [Q12 BONUS] Deploying the API Online
 
-The project is pre-configured with a multi-stage [`Dockerfile`](Dockerfile) for zero-friction cloud deployment to platforms like **Render**, **Fly.io**, **Railway**, or **AWS**:
+### Live Production Deployment on Render
+The application is deployed live and publicly accessible:
+- **Live Base URL:** [`https://vyson-url-shortener.onrender.com`](https://vyson-url-shortener.onrender.com)
+- **Deployment Platform:** **Render** (Free Web Service via Docker)
+- **Database:** Embedded SQLite in WAL mode with connection pooling
+- **Security:** TLS/HTTPS with automated SSL certificate via Cloudflare CDN
 
-### Deploying to Render / Fly.io with Docker
+#### Live Endpoint Verification
+
+**1. Create a Shortened URL (`POST /shorten`):**
+```bash
+curl -X POST https://vyson-url-shortener.onrender.com/shorten \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://github.com/AkshayMadan098/Backend-projects"}'
+```
+Response (`HTTP/2 201 Created`):
+```json
+{
+  "shortCode": "iLIq7Qq",
+  "originalUrl": "https://github.com/AkshayMadan098/Backend-projects",
+  "shortUrl": "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq",
+  "createdAt": "2026-11-11T11:00:43.181"
+}
+```
+
+**2. Test Redirection (`GET /redirect?code={code}`):**
+```bash
+curl -i "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq"
+```
+Response (`HTTP/2 302 Found`):
+```http
+HTTP/2 302 
+location: https://github.com/AkshayMadan098/Backend-projects
+server: cloudflare
+x-render-origin-server: Render
+```
+
+**3. Test 404 on Non-Existent Code:**
+```bash
+curl -i "https://vyson-url-shortener.onrender.com/redirect?code=nonExistent123"
+```
+Response (`HTTP/2 404 Not Found`):
+```json
+{
+  "status": 404,
+  "error": "Not Found",
+  "message": "Short code 'nonExistent123' not found"
+}
+```
+
+---
+
+### Docker Deployment Instructions
+The project includes a multi-stage [`Dockerfile`](Dockerfile) for zero-friction cloud deployment to platforms like **Render**, **Fly.io**, **Railway**, or **AWS**:
+
 1. Build and test Docker container locally:
    ```bash
    docker build -t url-shortener .
    docker run -p 8081:8081 -e PORT=8081 url-shortener
    ```
-2. On **Fly.io**:
-   ```bash
-   fly launch
-   fly deploy
-   ```
-3. On **Render**:
+2. Deploying on **Render**:
    - Create a new **Web Service** connected to your GitHub repository.
-   - Environment: `Docker`.
-   - Set environment variable `PORT=8080`.
+   - Root Directory: `url-shortener`.
+   - Environment / Runtime: `Docker`.
+   - Instance Type: `Free`.
 
-### Expected Latency Impact
+### Latency Comparison: Local vs. Cloud
 - **Local:** Round-trip latency is $\approx 1 - 2\text{ ms}$ because client, JVM, and database file reside on the same host with loopback networking (`127.0.0.1`).
-- **Cloud:** Round-trip latency will typically range between **$25\text{ ms} - 120\text{ ms}$** depending on geographic distance between the client, CDN edge, and cloud container data center.
+- **Cloud (Render + Cloudflare):** Round-trip latency averages **$\approx 35\text{ ms} - 80\text{ ms}$** due to geographic distance, TLS negotiation, and edge routing.
 
 ---
 
