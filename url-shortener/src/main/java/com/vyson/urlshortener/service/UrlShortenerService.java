@@ -1,10 +1,11 @@
 package com.vyson.urlshortener.service;
 
-import com.vyson.urlshortener.dto.ShortenResponse;
+import com.vyson.urlshortener.dto.*;
 import com.vyson.urlshortener.entity.UrlMapping;
-import com.vyson.urlshortener.exception.InvalidUrlException;
-import com.vyson.urlshortener.exception.UrlNotFoundException;
+import com.vyson.urlshortener.entity.User;
+import com.vyson.urlshortener.exception.*;
 import com.vyson.urlshortener.repository.UrlMappingRepository;
+import com.vyson.urlshortener.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,6 +13,8 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -22,71 +25,262 @@ public class UrlShortenerService {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final UrlMappingRepository repository;
+    private final UserRepository userRepository;
 
-    public UrlShortenerService(UrlMappingRepository repository) {
+    public UrlShortenerService(UrlMappingRepository repository, UserRepository userRepository) {
         this.repository = repository;
+        this.userRepository = userRepository;
     }
 
     /**
-     * Shortens a given URL. If the URL has already been shortened,
-     * the existing short code is returned (idempotent / duplicate URL handling - Q7).
+     * Shortens a given URL.
+     * M2A2 Updates:
+     * - [Q4] Multiple short codes for duplicate URLs are now allowed (no deduplication return).
+     * - [Q5] Links user if API key is provided.
+     * - [Q8] Supports optional expiration date.
+     * - [Q9] Supports optional custom short code with collision handling.
+     * - [Q14] Supports optional password protection.
      */
     @Transactional
-    public ShortenResponse shortenUrl(String originalUrl, String baseUrl) {
-        validateUrl(originalUrl);
-        String normalizedUrl = originalUrl.trim();
-
-        // Check if the URL is already present in the database (Q7)
-        Optional<UrlMapping> existing = repository.findByOriginalUrl(normalizedUrl);
-        if (existing.isPresent()) {
-            UrlMapping mapping = existing.get();
-            return buildResponse(mapping, baseUrl);
+    public ShortenResponse shortenUrl(ShortenRequest request, String apiKey, String baseUrl) {
+        if (request == null || request.getUrl() == null || request.getUrl().isBlank()) {
+            throw new InvalidUrlException("URL must not be null or blank");
         }
 
-        // Generate a unique short code
-        String shortCode = generateUniqueShortCode();
+        validateUrl(request.getUrl());
+        String normalizedUrl = request.getUrl().trim();
+
+        // Resolve authenticated user if API key provided (Q5)
+        User owner = resolveUser(apiKey);
+
+        String shortCode;
+        if (request.getCustomCode() != null && !request.getCustomCode().isBlank()) {
+            // [Q9] Custom short code
+            String custom = request.getCustomCode().trim();
+            validateCustomCode(custom);
+            if (repository.existsByShortCodeAndIsDeletedFalse(custom)) {
+                throw new CustomCodeAlreadyExistsException("Custom code '" + custom + "' already in use, please choose another");
+            }
+            shortCode = custom;
+        } else {
+            // Random Base62 code
+            shortCode = generateUniqueShortCode();
+        }
 
         UrlMapping mapping = new UrlMapping(shortCode, normalizedUrl, LocalDateTime.now());
-        UrlMapping saved = repository.save(mapping);
+        mapping.setUser(owner);
+        mapping.setExpiresAt(request.getExpiresAt());
+        if (request.getPassword() != null && !request.getPassword().isBlank()) {
+            mapping.setPassword(request.getPassword().trim());
+        }
 
+        UrlMapping saved = repository.save(mapping);
         return buildResponse(saved, baseUrl);
     }
 
     /**
-     * Retrieves the original URL corresponding to a short code.
-     * Throws UrlNotFoundException if the code does not exist (Q8).
+     * Backward-compatible helper for basic shorten calls
      */
-    @Transactional(readOnly = true)
-    public String getOriginalUrl(String shortCode) {
+    @Transactional
+    public ShortenResponse shortenUrl(String originalUrl, String baseUrl) {
+        return shortenUrl(new ShortenRequest(originalUrl), null, baseUrl);
+    }
+
+    /**
+     * [Q10 & Q12] Bulk creation of short codes for enterprise users.
+     */
+    @Transactional
+    public ShortenBulkResponse bulkShortenUrls(ShortenBulkRequest bulkRequest, String apiKey, String baseUrl) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new InvalidApiKeyException("API key is required for bulk creation");
+        }
+
+        User user = userRepository.findByApiKey(apiKey.trim())
+                .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+
+        // [Q12] Authorization tier check
+        if (!"enterprise".equalsIgnoreCase(user.getTier())) {
+            throw new ForbiddenAccessException("Bulk creation is only available for enterprise tier users. Please upgrade your plan.");
+        }
+
+        List<ShortenResponse> results = new ArrayList<>();
+        for (String url : bulkRequest.getOriginalUrls()) {
+            if (url == null || url.isBlank()) {
+                throw new InvalidUrlException("One of the URLs in bulk request is null or blank");
+            }
+            validateUrl(url);
+            String code = generateUniqueShortCode();
+            UrlMapping mapping = new UrlMapping(code, url.trim(), LocalDateTime.now());
+            mapping.setUser(user);
+            UrlMapping saved = repository.save(mapping);
+            results.add(buildResponse(saved, baseUrl));
+        }
+
+        return new ShortenBulkResponse(results);
+    }
+
+    /**
+     * [Q3, Q8, Q14] Retrieves the original URL for redirection:
+     * - Increments click counter (Q3).
+     * - Updates last_accessed_at timestamp (Q3).
+     * - Checks expiry date (Q8) -> returns 404 if expired.
+     * - Verifies password if protected (Q14) -> returns 401 if unauthorized.
+     */
+    @Transactional
+    public String getOriginalUrl(String shortCode, String password) {
         if (shortCode == null || shortCode.isBlank()) {
             throw new UrlNotFoundException("Short code cannot be empty");
         }
 
-        UrlMapping mapping = repository.findByShortCode(shortCode.trim())
+        UrlMapping mapping = repository.findByShortCodeAndIsDeletedFalse(shortCode.trim())
                 .orElseThrow(() -> new UrlNotFoundException("Short code '" + shortCode + "' not found"));
+
+        // [Q8] Expiry check
+        if (mapping.isExpired()) {
+            throw new UrlExpiredException("Short code '" + shortCode + "' has expired");
+        }
+
+        // [Q14] Password protection check
+        if (mapping.hasPassword()) {
+            if (password == null || !password.equals(mapping.getPassword())) {
+                throw new PasswordRequiredException("Password required or incorrect for protected short code '" + shortCode + "'");
+            }
+        }
+
+        // [Q3] Increment click counter & update last accessed time
+        mapping.setClickCount(mapping.getClickCount() + 1);
+        mapping.setLastAccessedAt(LocalDateTime.now());
+        repository.save(mapping);
 
         return mapping.getOriginalUrl();
     }
 
+    public String getOriginalUrl(String shortCode) {
+        return getOriginalUrl(shortCode, null);
+    }
+
     /**
-     * Deletes a URL mapping by its short code (Q9).
-     * Throws UrlNotFoundException if the code does not exist.
+     * [Q5] Soft-deletes a URL mapping with user ownership check.
      */
     @Transactional
-    public void deleteShortCode(String shortCode) {
+    public void deleteShortCode(String shortCode, String apiKey) {
         if (shortCode == null || shortCode.isBlank()) {
             throw new UrlNotFoundException("Short code cannot be empty");
         }
 
-        UrlMapping mapping = repository.findByShortCode(shortCode.trim())
+        UrlMapping mapping = repository.findByShortCodeAndIsDeletedFalse(shortCode.trim())
                 .orElseThrow(() -> new UrlNotFoundException("Short code '" + shortCode + "' not found"));
 
-        repository.delete(mapping);
+        // Ownership verification (Q5)
+        if (mapping.getUser() != null) {
+            if (apiKey == null || apiKey.isBlank()) {
+                throw new InvalidApiKeyException("API key required to delete this short code");
+            }
+            User requestingUser = userRepository.findByApiKey(apiKey.trim())
+                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+
+            if (!mapping.getUser().getId().equals(requestingUser.getId())) {
+                throw new ForbiddenAccessException("You do not own this short code and cannot delete it");
+            }
+        }
+
+        // Soft delete (Q5)
+        mapping.setDeleted(true);
+        mapping.setDeletedAt(LocalDateTime.now());
+        repository.save(mapping);
     }
 
     /**
-     * Generates a random Base62 alphanumeric code with collision resolution.
+     * [Q13] Allows editing a short code (URL, expiration date, password) with ownership check.
      */
+    @Transactional
+    public ShortenResponse editShortCode(String shortCode, ShortenEditRequest editRequest, String apiKey, String baseUrl) {
+        if (shortCode == null || shortCode.isBlank()) {
+            throw new UrlNotFoundException("Short code cannot be empty");
+        }
+
+        UrlMapping mapping = repository.findByShortCodeAndIsDeletedFalse(shortCode.trim())
+                .orElseThrow(() -> new UrlNotFoundException("Short code '" + shortCode + "' not found"));
+
+        // Ownership check
+        if (mapping.getUser() != null) {
+            if (apiKey == null || apiKey.isBlank()) {
+                throw new InvalidApiKeyException("API key required to edit this short code");
+            }
+            User requestingUser = userRepository.findByApiKey(apiKey.trim())
+                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+
+            if (!mapping.getUser().getId().equals(requestingUser.getId())) {
+                throw new ForbiddenAccessException("You do not own this short code and cannot edit it");
+            }
+        } else if (apiKey != null && !apiKey.isBlank()) {
+            // Claim ownership if previously unowned
+            User requestingUser = userRepository.findByApiKey(apiKey.trim())
+                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+            mapping.setUser(requestingUser);
+        }
+
+        // Update target URL if provided
+        if (editRequest.getOriginalUrl() != null && !editRequest.getOriginalUrl().isBlank()) {
+            validateUrl(editRequest.getOriginalUrl());
+            mapping.setOriginalUrl(editRequest.getOriginalUrl().trim());
+        }
+
+        // Update expiry date (can be in past to deactivate)
+        if (editRequest.getExpiresAt() != null) {
+            mapping.setExpiresAt(editRequest.getExpiresAt());
+        }
+
+        // Update password (Q14)
+        if (editRequest.getPassword() != null) {
+            mapping.setPassword(editRequest.getPassword().isBlank() ? null : editRequest.getPassword().trim());
+        }
+
+        UrlMapping saved = repository.save(mapping);
+        return buildResponse(saved, baseUrl);
+    }
+
+    /**
+     * [Q15] Retrieves all URLs owned by an authenticated user.
+     */
+    @Transactional(readOnly = true)
+    public List<ShortenResponse> getUserUrls(String apiKey, String baseUrl) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new InvalidApiKeyException("API key is required to view your URLs");
+        }
+
+        User user = userRepository.findByApiKey(apiKey.trim())
+                .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+
+        List<UrlMapping> mappings = repository.findByUserAndIsDeletedFalseOrderByCreatedAtDesc(user);
+        List<ShortenResponse> responses = new ArrayList<>();
+        for (UrlMapping mapping : mappings) {
+            responses.add(buildResponse(mapping, baseUrl));
+        }
+        return responses;
+    }
+
+    /**
+     * [Q16 BONUS] Health check verifying database connectivity.
+     */
+    @Transactional(readOnly = true)
+    public boolean checkHealth() {
+        try {
+            repository.count();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private User resolveUser(String apiKey) {
+        if (apiKey == null || apiKey.isBlank()) {
+            return null;
+        }
+        return userRepository.findByApiKey(apiKey.trim())
+                .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+    }
+
     private String generateUniqueShortCode() {
         int maxAttempts = 10;
         for (int i = 0; i < maxAttempts; i++) {
@@ -103,9 +297,12 @@ public class UrlShortenerService {
         throw new IllegalStateException("Failed to generate a unique short code after " + maxAttempts + " attempts.");
     }
 
-    /**
-     * Validates that the input is a non-empty, syntactically valid HTTP/HTTPS URL.
-     */
+    private void validateCustomCode(String code) {
+        if (!code.matches("^[a-zA-Z0-9_-]{3,32}$")) {
+            throw new IllegalArgumentException("Custom code must be between 3 and 32 alphanumeric characters, hyphens, or underscores.");
+        }
+    }
+
     private void validateUrl(String url) {
         if (url == null || url.isBlank()) {
             throw new InvalidUrlException("URL must not be null or blank");
@@ -126,8 +323,18 @@ public class UrlShortenerService {
         }
     }
 
-    private ShortenResponse buildResponse(UrlMapping mapping, String baseUrl) {
+    public ShortenResponse buildResponse(UrlMapping mapping, String baseUrl) {
         String shortUrl = baseUrl + "/redirect?code=" + mapping.getShortCode();
-        return new ShortenResponse(mapping.getShortCode(), mapping.getOriginalUrl(), shortUrl, mapping.getCreatedAt());
+        return new ShortenResponse(
+                mapping.getShortCode(),
+                mapping.getOriginalUrl(),
+                shortUrl,
+                mapping.getCreatedAt(),
+                mapping.getClickCount(),
+                mapping.getLastAccessedAt(),
+                mapping.getExpiresAt(),
+                mapping.hasPassword(),
+                mapping.getDeleted()
+        );
     }
 }
