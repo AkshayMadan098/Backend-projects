@@ -10,7 +10,7 @@ Each project is located in its own self-contained directory with dedicated docum
 
 | # | Project | Stack | Key Architectural Features | Live Demo | Status |
 |:---:|:---|:---|:---|:---:|:---:|
-| **01** | [**URL Shortener Service**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite**, **Hibernate ORM**, **Docker** | Base62 encoding, SQLite WAL mode, HikariCP pooling, **7,300+ req/sec** stress testing, REST API | [**Live API ↗**](https://vyson-url-shortener.onrender.com) | ✅ Complete |
+| **01** | [**URL Shortener & Analytics Platform**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite (WAL)**, **Hibernate ORM**, **Docker** | Base62 encoding, **7,300+ req/sec** stress testing, User API keys, Soft deletes, Bulk batch creation, Tiers (Hobby/Enterprise), Expiry dates, Password protection | [**Live API ↗**](https://vyson-url-shortener.onrender.com) | ✅ Complete (M2A1 & M2A2) |
 | **02** | **Auth & RBAC Service** | *Coming Soon* | JWT access/refresh rotation, Redis token blacklist, OAuth2 | — | 🔄 In Progress |
 | **03** | **Real-Time Event Engine** | *Coming Soon* | Kafka / RabbitMQ, WebSocket pub/sub, idempotent consumers | — | 📋 Planned |
 
@@ -23,32 +23,24 @@ The URL Shortener API is deployed online on **Render** using Docker and SQLite i
 - **Live Service URL:** `https://vyson-url-shortener.onrender.com`
 - **SSL / CDN:** Managed via Cloudflare with automatic HTTPS
 
-### Test the Live API
+### Quick Test Commands
 
-**1. Shorten a URL:**
+**1. Service Root & Endpoint Directory:**
+```bash
+curl -s "https://vyson-url-shortener.onrender.com/"
+```
+
+**2. Shorten a URL (with optional API key and custom code):**
 ```bash
 curl -X POST https://vyson-url-shortener.onrender.com/shorten \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: ak_live_alice1234567890abcdef" \
   -d '{"url":"https://github.com/AkshayMadan098/Backend-projects"}'
 ```
-Response (`201 Created`):
-```json
-{
-  "shortCode": "iLIq7Qq",
-  "originalUrl": "https://github.com/AkshayMadan098/Backend-projects",
-  "shortUrl": "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq",
-  "createdAt": "2026-11-11T11:00:43.181"
-}
-```
 
-**2. Test Redirection:**
+**3. Test Redirection:**
 ```bash
 curl -i "https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq"
-```
-Response (`302 Found`):
-```http
-HTTP/2 302 
-location: https://github.com/AkshayMadan098/Backend-projects
 ```
 *(Or test directly in your browser: [https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq](https://vyson-url-shortener.onrender.com/redirect?code=iLIq7Qq))*
 
@@ -56,17 +48,22 @@ location: https://github.com/AkshayMadan098/Backend-projects
 
 ## 🔍 Featured Projects
 
-### 1. [URL Shortener Service](./url-shortener)
-A high-performance URL shortening and redirection engine designed to handle heavy concurrent traffic with sub-40ms baseline latency.
+### 1. [URL Shortener & Analytics Platform](./url-shortener)
+A high-performance URL shortening, redirection, and link analytics engine designed to handle heavy concurrent traffic with sub-40ms baseline latency.
 
 - **Folder:** [`/url-shortener`](./url-shortener)
-- **Key Features:**
+- **Comprehensive Docs:** See [VYSONM2A1 & M2A2 Documentation](./url-shortener/README.md)
+- **Key Capabilities (Milestone 2):**
   - **Base62 Dynamic Encoding:** Generates collision-resistant 7-character short codes ($62^7 \approx 3.52 \text{ trillion}$ combinations).
-  - **Idempotency & Deduplication:** Avoids redundant database entries when shortening duplicate URLs.
   - **Embedded SQLite in WAL Mode:** Configured with Write-Ahead Logging (`journal_mode=WAL`) and a 10s busy timeout for non-blocking concurrent reads and writes.
   - **Stress Tested:** Benchmarked with `oha` from 10 to 2,000 concurrent connections, hitting peak throughput of **7,319 requests/sec**.
-  - **Automated Integration Tests:** Comprehensive JUnit 5 and MockMvc test coverage.
-  - **Dockerized & Cloud Deployed:** Live on Render via multi-stage Alpine Docker container.
+  - **Analytics & Click Tracking (M2A2 Q1 & Q3):** Tracks total click counts and `last_accessed_at` timestamps per short code.
+  - **User Management & API Keys (M2A2 Q5):** Links creations to users via `X-API-Key` headers; protects URLs with creator-only permissions.
+  - **Soft Delete (M2A2 Q5):** Protects production links from catastrophic deletion by preserving records while deactivating routes.
+  - **Bulk URL Creation & Tiered Auth (M2A2 Q10 & Q12):** Batch processing endpoint (`POST /shorten/bulk`) restricted to Enterprise tier accounts.
+  - **Expiring Links & Passwords (M2A2 Q8 & Q14):** Time-based link auto-deactivation and password gates for paywalled content.
+  - **Health Monitoring (M2A2 Q16):** `/health` endpoint validating server uptime and active database connectivity.
+  - **Automated Integration Tests:** 12 comprehensive JUnit 5 and MockMvc test suites covering all edge cases.
 
 ---
 
@@ -81,7 +78,7 @@ Backend-projects/
 │   ├── pom.xml                # Maven build configuration
 │   ├── Dockerfile             # Multi-stage production container build
 │   ├── scripts/load-test.sh   # Automated load testing script
-│   └── README.md              # Deep-dive documentation & benchmark results
+│   └── README.md              # Deep-dive documentation for M2A1 & M2A2
 └── ... (Future projects)
 ```
 
