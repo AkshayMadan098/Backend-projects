@@ -26,6 +26,7 @@ public final class FilterOrderConstants {
 
     public static final int RESPONSE_TIME_ORDER = Ordered.HIGHEST_PRECEDENCE;
     public static final int REQUEST_LOGGING_ORDER = Ordered.HIGHEST_PRECEDENCE + 10;
+    public static final int API_VERSIONING_ORDER = Ordered.HIGHEST_PRECEDENCE + 15;
     public static final int BLACKLIST_ORDER = Ordered.HIGHEST_PRECEDENCE + 20;
     public static final int API_KEY_AUTH_ORDER = Ordered.HIGHEST_PRECEDENCE + 30;
     public static final int TIER_AUTHORIZATION_ORDER = Ordered.HIGHEST_PRECEDENCE + 40;
