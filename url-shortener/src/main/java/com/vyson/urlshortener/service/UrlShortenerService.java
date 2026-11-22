@@ -359,4 +359,112 @@ public class UrlShortenerService {
                 mapping.getDeleted()
         );
     }
+
+    public ShortenV2Response buildV2Response(UrlMapping mapping, String baseUrl) {
+        String shortUrl = baseUrl + "/redirect?code=" + mapping.getShortCode();
+        ShortenV2Response.UserSummary ownerSummary = null;
+        if (mapping.getUser() != null) {
+            ownerSummary = new ShortenV2Response.UserSummary(
+                    mapping.getUser().getEmail(),
+                    mapping.getUser().getName(),
+                    mapping.getUser().getTier()
+            );
+        }
+        return new ShortenV2Response(
+                "v2.0",
+                mapping.getShortCode(),
+                mapping.getOriginalUrl(),
+                shortUrl,
+                mapping.getCreatedAt(),
+                mapping.getExpiresAt(),
+                mapping.getClickCount(),
+                mapping.hasPassword(),
+                ownerSummary
+        );
+    }
+
+    @Transactional
+    public ShortenV2Response shortenUrlV2(ShortenRequest request, User authenticatedUser, String apiKey, String baseUrl) {
+        if (request == null || request.getUrl() == null || request.getUrl().isBlank()) {
+            throw new InvalidUrlException("URL must not be null or blank");
+        }
+        validateUrl(request.getUrl());
+        String normalizedUrl = request.getUrl().trim();
+
+        User owner = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+        if (owner == null) {
+            throw new InvalidApiKeyException("API key is required for API v2");
+        }
+
+        String shortCode;
+        if (request.getCustomCode() != null && !request.getCustomCode().isBlank()) {
+            String custom = request.getCustomCode().trim();
+            validateCustomCode(custom);
+            if (repository.existsByShortCodeAndIsDeletedFalse(custom)) {
+                throw new CustomCodeAlreadyExistsException("Custom code '" + custom + "' already in use, please choose another");
+            }
+            shortCode = custom;
+        } else {
+            shortCode = generateUniqueShortCode();
+        }
+
+        UrlMapping mapping = new UrlMapping(shortCode, normalizedUrl, LocalDateTime.now());
+        mapping.setUser(owner);
+        mapping.setExpiresAt(request.getExpiresAt());
+        if (request.getPassword() != null && !request.getPassword().isBlank()) {
+            mapping.setPassword(request.getPassword().trim());
+        }
+
+        UrlMapping saved = repository.save(mapping);
+        return buildV2Response(saved, baseUrl);
+    }
+
+    @Transactional
+    public ShortenBulkV2Response bulkShortenUrlsV2(ShortenBulkRequest bulkRequest, User authenticatedUser, String apiKey, String baseUrl) {
+        User user = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+        if (user == null) {
+            throw new InvalidApiKeyException("API key is required for bulk creation");
+        }
+        if (!"enterprise".equalsIgnoreCase(user.getTier())) {
+            throw new ForbiddenAccessException("Bulk creation is only available for enterprise tier users. Please upgrade your plan.");
+        }
+
+        List<ShortenV2Response> results = new ArrayList<>();
+        for (String url : bulkRequest.getOriginalUrls()) {
+            if (url == null || url.isBlank()) {
+                throw new InvalidUrlException("One of the URLs in bulk request is null or blank");
+            }
+            validateUrl(url);
+            String code = generateUniqueShortCode();
+            UrlMapping mapping = new UrlMapping(code, url.trim(), LocalDateTime.now());
+            mapping.setUser(user);
+            UrlMapping saved = repository.save(mapping);
+            results.add(buildV2Response(saved, baseUrl));
+        }
+
+        return new ShortenBulkV2Response(results);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ShortenV2Response> getUserUrlsV2(User authenticatedUser, String apiKey, String baseUrl) {
+        User user = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+        if (user == null) {
+            throw new InvalidApiKeyException("API key is required to view your URLs");
+        }
+
+        List<UrlMapping> mappings = repository.findByUserAndIsDeletedFalseOrderByCreatedAtDesc(user);
+        List<ShortenV2Response> responses = new ArrayList<>();
+        for (UrlMapping mapping : mappings) {
+            responses.add(buildV2Response(mapping, baseUrl));
+        }
+        return responses;
+    }
+
+    @Transactional
+    public ShortenV2Response editShortCodeV2(String shortCode, ShortenEditRequest editRequest, User authenticatedUser, String apiKey, String baseUrl) {
+        editShortCode(shortCode, editRequest, authenticatedUser, apiKey, baseUrl);
+        UrlMapping mapping = repository.findByShortCodeAndIsDeletedFalse(shortCode.trim())
+                .orElseThrow(() -> new UrlNotFoundException("Short code '" + shortCode + "' not found"));
+        return buildV2Response(mapping, baseUrl);
+    }
 }
