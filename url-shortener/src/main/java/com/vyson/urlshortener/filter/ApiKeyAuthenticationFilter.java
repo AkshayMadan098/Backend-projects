@@ -2,6 +2,7 @@ package com.vyson.urlshortener.filter;
 
 import com.vyson.urlshortener.entity.User;
 import com.vyson.urlshortener.repository.UserRepository;
+import com.vyson.urlshortener.versioning.ApiVersion;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,11 +20,15 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * [Q3 & Q7] Authentication Middleware (Order 4)
+ * [Q3 & Q7] Authentication Middleware (Order 5)
  *
  * [Q3] Checks whether the provided API key is valid or not.
  * If invalid or missing on a protected route, short-circuits the pipeline immediately
  * returning HTTP 401 Unauthorized without executing endpoint logic.
+ *
+ * [M2A4 API Versioning Breaking Change]:
+ * In v1, /shorten allowed anonymous requests.
+ * In v2, authentication is strictly required on URL creation (/v2/shorten).
  *
  * [Q7] When user details are fetched from the API key the first time, sets this User
  * object into the request attributes ("authenticatedUser") so subsequent middlewares
@@ -36,12 +41,30 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(ApiKeyAuthenticationFilter.class);
     private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
 
-    // Routes that strictly require an API key
+    // Routes that strictly require an API key across all versions
     private static final List<String> PROTECTED_ROUTE_PATTERNS = List.of(
             "/shorten/bulk",
             "/shorten/bulk/**",
+            "/v1/shorten/bulk",
+            "/v1/shorten/bulk/**",
+            "/v2/shorten/bulk",
+            "/v2/shorten/bulk/**",
+            "/api/v1/shorten/bulk",
+            "/api/v1/shorten/bulk/**",
+            "/api/v2/shorten/bulk",
+            "/api/v2/shorten/bulk/**",
             "/users/urls",
-            "/user/urls"
+            "/users/urls/**",
+            "/user/urls",
+            "/user/urls/**",
+            "/v1/users/urls",
+            "/v1/users/urls/**",
+            "/v2/users/urls",
+            "/v2/users/urls/**",
+            "/api/v1/users/urls",
+            "/api/v1/users/urls/**",
+            "/api/v2/users/urls",
+            "/api/v2/users/urls/**"
     );
 
     private final UserRepository userRepository;
@@ -58,14 +81,20 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
         String apiKey = extractApiKey(request);
-        boolean requiresAuth = isProtectedRoute(path);
+
+        ApiVersion version = (ApiVersion) request.getAttribute(MiddlewareConstants.RESOLVED_API_VERSION_ATTR);
+        if (version == null) {
+            version = ApiVersion.V1;
+        }
+
+        boolean requiresAuth = isProtectedRoute(path, version, request.getMethod());
 
         // Case 1: Protected route accessed without API key
         if (requiresAuth && (apiKey == null || apiKey.isBlank())) {
             long duration = System.nanoTime() - selfStart;
             MiddlewareTimer.record(request, "ApiKeyAuthenticationFilter", duration);
 
-            log.warn("[AUTH REQUIRED] Request {} {} missing required API key.", request.getMethod(), path);
+            log.warn("[AUTH REQUIRED] Request {} {} missing required API key (version={}).", request.getMethod(), path, version);
             FilterResponseHelper.writeErrorResponse(
                     response,
                     HttpStatus.UNAUTHORIZED,
@@ -101,16 +130,25 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
                     authenticatedUser.getEmail(), authenticatedUser.getTier());
         }
 
-        long selfDuration = System.nanoTime() - selfStart;
-        MiddlewareTimer.record(request, "ApiKeyAuthenticationFilter", selfDuration);
+        long duration = System.nanoTime() - selfStart;
+        MiddlewareTimer.record(request, "ApiKeyAuthenticationFilter", duration);
 
-        // Continue filter chain
         filterChain.doFilter(request, response);
     }
 
-    private boolean isProtectedRoute(String path) {
+    private boolean isProtectedRoute(String path, ApiVersion version, String method) {
         for (String pattern : PROTECTED_ROUTE_PATTERNS) {
             if (PATH_MATCHER.match(pattern, path)) {
+                return true;
+            }
+        }
+
+        // V2 breaking change: URL creation and mutation strictly requires API key
+        if (version == ApiVersion.V2) {
+            if (("POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method))
+                    && (PATH_MATCHER.match("/shorten", path) || PATH_MATCHER.match("/shorten/**", path)
+                    || PATH_MATCHER.match("/v2/shorten", path) || PATH_MATCHER.match("/v2/shorten/**", path)
+                    || PATH_MATCHER.match("/api/v2/shorten", path) || PATH_MATCHER.match("/api/v2/shorten/**", path))) {
                 return true;
             }
         }

@@ -38,7 +38,15 @@ public class TierAuthorizationFilter extends OncePerRequestFilter {
     // Routes requiring enterprise tier authorization
     private static final List<String> ENTERPRISE_ROUTE_PATTERNS = List.of(
             "/shorten/bulk",
-            "/shorten/bulk/**"
+            "/shorten/bulk/**",
+            "/v1/shorten/bulk",
+            "/v1/shorten/bulk/**",
+            "/v2/shorten/bulk",
+            "/v2/shorten/bulk/**",
+            "/api/v1/shorten/bulk",
+            "/api/v1/shorten/bulk/**",
+            "/api/v2/shorten/bulk",
+            "/api/v2/shorten/bulk/**"
     );
 
     @Override
