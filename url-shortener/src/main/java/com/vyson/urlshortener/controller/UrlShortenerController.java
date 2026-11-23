@@ -6,6 +6,7 @@ import com.vyson.urlshortener.entity.User;
 import com.vyson.urlshortener.filter.MiddlewareConstants;
 import com.vyson.urlshortener.repository.RequestLogRepository;
 import com.vyson.urlshortener.service.UrlShortenerService;
+import com.vyson.urlshortener.versioning.ApiVersion;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
@@ -30,22 +31,28 @@ public class UrlShortenerController {
 
     /**
      * Root Endpoint: GET /
-     * Returns service metadata and API directory.
+     * Returns service metadata and API directory with version information.
      */
     @GetMapping("/")
     public ResponseEntity<Map<String, Object>> root(HttpServletRequest request) {
         String baseUrl = extractBaseUrl(request);
         return ResponseEntity.ok(Map.of(
-                "service", "URL Shortener API (VYSONM2A3 Middlewares)",
+                "service", "URL Shortener API (VYSONM2A4 API Versioning)",
                 "status", "UP",
                 "timestamp", LocalDateTime.now(),
+                "versions", Map.of(
+                        "v1", "Legacy (Deprecated, RFC 8594 Sunset: 2027-06-01)",
+                        "v2", "Current Active Stable (Mandatory Auth, Enriched Metadata)"
+                ),
                 "endpoints", Map.of(
-                        "POST /shorten", "Shorten URL (supports customCode, expiresAt, password, X-API-Key header)",
-                        "POST /shorten/bulk", "Bulk shorten URLs (Enterprise tier only, protected by ApiKey & TierAuthorization middlewares)",
-                        "GET /redirect?code={code}", "Redirect to original URL (supports password query/header)",
-                        "PUT /shorten/{code}", "Edit short code target URL, expiry date, or password (requires owner X-API-Key)",
-                        "DELETE /shorten/{code}", "Soft-delete short code (requires owner X-API-Key)",
-                        "GET /users/urls", "List all URLs owned by user (requires X-API-Key)",
+                        "POST /shorten", "Shorten URL (resolves version via path, header X-API-Version, or ?version=)",
+                        "POST /v1/shorten", "Legacy V1: Anonymous shortening permitted",
+                        "POST /v2/shorten", "Modern V2: Strict authentication required",
+                        "POST /shorten/bulk", "Bulk shorten URLs (Enterprise tier only)",
+                        "GET /redirect?code={code}", "Redirect to original URL",
+                        "PUT /shorten/{code}", "Edit short code target URL, expiry date, or password",
+                        "DELETE /shorten/{code}", "Soft-delete short code",
+                        "GET /users/urls", "List all URLs owned by user",
                         "GET /logs", "View recent HTTP request logs stored by RequestLogging middleware",
                         "GET /health", "System health and database check"
                 ),
@@ -56,10 +63,10 @@ public class UrlShortenerController {
     /**
      * Endpoint 1: POST /shorten
      * Accepts a long URL and returns a shortened code and redirect URL.
-     * M2A3: Uses pre-authenticated User from request attributes if present (Q7).
+     * M2A4: Adapts response dynamically based on resolved API version (Header, Query, or Default).
      */
     @PostMapping("/shorten")
-    public ResponseEntity<ShortenResponse> shortenUrl(
+    public ResponseEntity<?> shortenUrl(
             @Valid @RequestBody(required = false) ShortenRequest request,
             @RequestParam(name = "url", required = false) String urlParam,
             @RequestHeader(name = "X-API-Key", required = false) String apiKey,
@@ -76,8 +83,14 @@ public class UrlShortenerController {
 
         String baseUrl = extractBaseUrl(servletRequest);
         User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
-        ShortenResponse response = service.shortenUrl(effectiveRequest, authenticatedUser, apiKey, baseUrl);
+        ApiVersion version = (ApiVersion) servletRequest.getAttribute(MiddlewareConstants.RESOLVED_API_VERSION_ATTR);
 
+        if (version == ApiVersion.V2) {
+            ShortenV2Response v2Response = service.shortenUrlV2(effectiveRequest, authenticatedUser, apiKey, baseUrl);
+            return ResponseEntity.status(HttpStatus.CREATED).body(v2Response);
+        }
+
+        ShortenResponse response = service.shortenUrl(effectiveRequest, authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -85,16 +98,22 @@ public class UrlShortenerController {
      * [Q10 & Q12] Endpoint 1b: POST /shorten/bulk
      * Bulk creation of short codes. Restricted to Enterprise tier users.
      * [Q4 & Q7] Authentication and Enterprise tier checks are enforced by middlewares.
-     * Consumes authenticatedUser attribute directly without duplicate DB queries.
      */
     @PostMapping("/shorten/bulk")
-    public ResponseEntity<ShortenBulkResponse> bulkShorten(
+    public ResponseEntity<?> bulkShorten(
             @Valid @RequestBody ShortenBulkRequest bulkRequest,
             @RequestHeader(name = "X-API-Key", required = false) String apiKey,
             HttpServletRequest servletRequest) {
 
         String baseUrl = extractBaseUrl(servletRequest);
         User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ApiVersion version = (ApiVersion) servletRequest.getAttribute(MiddlewareConstants.RESOLVED_API_VERSION_ATTR);
+
+        if (version == ApiVersion.V2) {
+            ShortenBulkV2Response v2Response = service.bulkShortenUrlsV2(bulkRequest, authenticatedUser, apiKey, baseUrl);
+            return ResponseEntity.status(HttpStatus.CREATED).body(v2Response);
+        }
+
         ShortenBulkResponse response = service.bulkShortenUrls(bulkRequest, authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -104,7 +123,7 @@ public class UrlShortenerController {
      * Edits an existing short code (target URL, expiry date, password). Requires owner API key.
      */
     @PutMapping("/shorten/{code}")
-    public ResponseEntity<ShortenResponse> editShortCode(
+    public ResponseEntity<?> editShortCode(
             @PathVariable("code") String code,
             @RequestBody ShortenEditRequest editRequest,
             @RequestHeader(name = "X-API-Key", required = false) String apiKey,
@@ -112,6 +131,13 @@ public class UrlShortenerController {
 
         String baseUrl = extractBaseUrl(servletRequest);
         User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ApiVersion version = (ApiVersion) servletRequest.getAttribute(MiddlewareConstants.RESOLVED_API_VERSION_ATTR);
+
+        if (version == ApiVersion.V2) {
+            ShortenV2Response response = service.editShortCodeV2(code, editRequest, authenticatedUser, apiKey, baseUrl);
+            return ResponseEntity.ok(response);
+        }
+
         ShortenResponse response = service.editShortCode(code, editRequest, authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.ok(response);
     }
@@ -165,12 +191,18 @@ public class UrlShortenerController {
      * Lists all active URLs owned by the authenticated user.
      */
     @GetMapping({"/users/urls", "/user/urls"})
-    public ResponseEntity<List<ShortenResponse>> getUserUrls(
+    public ResponseEntity<?> getUserUrls(
             @RequestHeader(name = "X-API-Key", required = false) String apiKey,
             HttpServletRequest servletRequest) {
 
         String baseUrl = extractBaseUrl(servletRequest);
         User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ApiVersion version = (ApiVersion) servletRequest.getAttribute(MiddlewareConstants.RESOLVED_API_VERSION_ATTR);
+
+        if (version == ApiVersion.V2) {
+            return ResponseEntity.ok(service.getUserUrlsV2(authenticatedUser, apiKey, baseUrl));
+        }
+
         List<ShortenResponse> urls = service.getUserUrls(authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.ok(urls);
     }
