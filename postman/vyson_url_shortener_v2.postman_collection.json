@@ -1,0 +1,409 @@
+{
+  "info": {
+    "_postman_id": "a8497d31-410e-436f-bca2-8df21bfa9831",
+    "name": "Vyson URL Shortener & Analytics API (v2.0)",
+    "description": "Production Postman collection for Vyson URL Shortener with comprehensive API Versioning (v1 vs v2), RFC 8594 Sunset/Deprecation headers, API key authentication, and tier-based authorization.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "ak_live_alice1234567890abcdef",
+      "type": "string"
+    },
+    {
+      "key": "enterpriseApiKey",
+      "value": "ak_live_enterprise999999999999",
+      "type": "string"
+    },
+    {
+      "key": "sampleShortCode",
+      "value": "custom-promo",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "V2 Endpoints (Current - Active)",
+      "description": "API v2 endpoints strictly enforcing API key authentication and returning enriched ShortenV2Response metadata.",
+      "item": [
+        {
+          "name": "1. Shorten URL (Authenticated)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test(\"Contains v2 headers\", function () {",
+                  "    pm.response.to.have.header(\"X-API-Version\", \"v2\");",
+                  "    pm.response.to.have.header(\"X-Response-Time\");",
+                  "});",
+                  "pm.test(\"Validates v2 schema\", function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.apiVersion).to.eql(\"v2.0\");",
+                  "    pm.expect(json.shortCode).to.be.a('string');",
+                  "    pm.expect(json.owner).to.be.an('object');",
+                  "    pm.collectionVariables.set(\"sampleShortCode\", json.shortCode);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://spring.io/projects/spring-boot\",\n  \"customCode\": \"spring-boot-v2\",\n  \"expiresAt\": \"2027-12-31T23:59:59\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v2/shorten",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "shorten"]
+            },
+            "description": "Creates a new short URL using the v2 endpoint. Requires a valid X-API-Key header."
+          }
+        },
+        {
+          "name": "2. Shorten URL - Unauthenticated (Expect 401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 401 Unauthorized\", function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test(\"Contains error message\", function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.error).to.eql(\"Unauthorized\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/unauth-test\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v2/shorten",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "shorten"]
+            },
+            "description": "Verifies that anonymous link creation in v2 is blocked with 401 Unauthorized."
+          }
+        },
+        {
+          "name": "3. Bulk Shorten URLs (Enterprise Tier)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test(\"Returns ShortenBulkV2Response\", function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.apiVersion).to.eql(\"v2.0\");",
+                  "    pm.expect(json.count).to.eql(3);",
+                  "    pm.expect(json.results.length).to.eql(3);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{enterpriseApiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"originalUrls\": [\n    \"https://example.com/page1\",\n    \"https://example.com/page2\",\n    \"https://example.com/page3\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v2/shorten/bulk",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "shorten", "bulk"]
+            },
+            "description": "Bulk creates short links for enterprise accounts. Enforced by TierAuthorizationFilter."
+          }
+        },
+        {
+          "name": "4. Edit Short Code Target URL",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"originalUrl\": \"https://spring.io/projects/spring-boot-updated\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v2/shorten/{{sampleShortCode}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "shorten", "{{sampleShortCode}}"]
+            },
+            "description": "Edits the destination URL of an existing short code owned by the caller."
+          }
+        },
+        {
+          "name": "5. List User URLs Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v2/users/urls",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "users", "urls"]
+            },
+            "description": "Lists all active links owned by the authenticated API key."
+          }
+        },
+        {
+          "name": "6. V2 Diagnostics Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v2/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["v2", "health"]
+            },
+            "description": "Returns enriched health and subsystem diagnostics."
+          }
+        }
+      ]
+    },
+    {
+      "name": "V1 Endpoints (Deprecated - Sunset 2027-06-01)",
+      "description": "Legacy API v1 endpoints. Anonymous shortening permitted, responses carry RFC 8594 Sunset and Deprecation headers.",
+      "item": [
+        {
+          "name": "1. Shorten URL (Anonymous Allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 201 Created\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test(\"Informs client of Sunset & Deprecation\", function () {",
+                  "    pm.response.to.have.header(\"Deprecation\");",
+                  "    pm.response.to.have.header(\"Sunset\");",
+                  "    pm.response.to.have.header(\"Warning\");",
+                  "    pm.response.to.have.header(\"Link\");",
+                  "    pm.response.to.have.header(\"X-API-Version\", \"v1\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/legacy-doc\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/shorten",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "shorten"]
+            },
+            "description": "Creates short URL anonymously. Injects RFC 8594 Sunset and Deprecation headers."
+          }
+        },
+        {
+          "name": "2. V1 Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/v1/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "health"]
+            },
+            "description": "Basic legacy health check."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Version Negotiation & Resolution",
+      "description": "Tests header-based, query parameter-based, and content negotiation resolution mechanisms.",
+      "item": [
+        {
+          "name": "1. Header Versioning (X-API-Version: v2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Version",
+                "value": "v2"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/header-version-test\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": ["{{baseUrl}}"],
+              "path": ["shorten"]
+            },
+            "description": "Passes version in X-API-Version header on unversioned URI."
+          }
+        },
+        {
+          "name": "2. Query Parameter Versioning (?version=v2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/query-version-test\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten?version=v2",
+              "host": ["{{baseUrl}}"],
+              "path": ["shorten"],
+              "query": [
+                {
+                  "key": "version",
+                  "value": "v2"
+                }
+              ]
+            },
+            "description": "Passes version in query parameter."
+          }
+        },
+        {
+          "name": "3. Content Negotiation (Accept Header)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/vnd.vyson.v2+json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/accept-header-test\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/shorten",
+              "host": ["{{baseUrl}}"],
+              "path": ["shorten"]
+            },
+            "description": "Selects v2 engine using RFC standard Accept header content negotiation."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Public Redirect",
+      "item": [
+        {
+          "name": "Resolve Short Code (HTTP 302 Found)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/redirect?code={{sampleShortCode}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["redirect"],
+              "query": [
+                {
+                  "key": "code",
+                  "value": "{{sampleShortCode}}"
+                }
+              ]
+            },
+            "description": "Public redirection endpoint. Increments click metrics and resolves to target URL."
+          }
+        }
+      ]
+    }
+  ]
+}
