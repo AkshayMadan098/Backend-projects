@@ -1,373 +1,304 @@
-# 🛡️ VYSONM2A3: Middlewares Architecture & Implementation
+# 📦 VYSONM2A4: API Versioning Architecture & Implementation
 
-> **Branch:** [`feature/m2a3-middlewares`](https://github.com/AkshayMadan098/Backend-projects/tree/feature/m2a3-middlewares)  
-> **Project:** URL Shortener & Analytics Platform (Milestone 2, Assignment 3)  
+> **Branch:** [`feature/m2a4-api-versioning`](https://github.com/AkshayMadan098/Backend-projects/tree/feature/m2a4-api-versioning)  
+> **Project:** URL Shortener & Analytics Platform (Milestone 2, Assignment 4)  
 > **Tech Stack:** Java 21 (LTS), Spring Boot 3.3.5, Spring Data JPA, Hibernate 6, SQLite 3 (WAL mode), JUnit 5, MockMvc  
-> **Test Status:** ✅ **21/21 Automated Tests Passing** (12 Core Tests + 9 Dedicated Middleware Tests)
+> **Test Status:** ✅ **34/34 Automated Tests Passing** (12 Core Tests + 9 Middleware Tests + 13 Versioning Tests)
 
 ---
 
 ## 📑 Table of Contents
 
-- [💡 What is Middleware?](#-what-is-middleware)
-- [🏗️ Middleware Pipeline Architecture](#️-middleware-pipeline-architecture)
-- [[Q1] Request Logging Middleware](#q1-request-logging-middleware)
-- [[Q2] Route-Specific Middleware Execution](#q2-route-specific-middleware-execution)
-- [[Q3] Authentication Middleware (API Key Validation)](#q3-authentication-middleware-api-key-validation)
-- [[Q4] Authorization Middleware (Enterprise Tier Check on Bulk Endpoint)](#q4-authorization-middleware-enterprise-tier-check-on-bulk-endpoint)
-- [[Q5] Blacklist Middleware with Dynamic Runtime Config File](#q5-blacklist-middleware-with-dynamic-runtime-config-file)
-- [[Q6] Response Time Middleware (Elapsed Duration Header)](#q6-response-time-middleware-elapsed-duration-header)
-- [[Q7] Context Passing Between Middlewares (Zero Redundant DB Queries)](#q7-context-passing-between-middlewares-zero-redundant-db-queries)
-- [[Q8] Middleware Chaining & Execution Order](#q8-middleware-chaining--execution-order)
-- [[Q9 BONUS] Timing Each Middleware for Internal Tracking](#q9-bonus-timing-each-middleware-for-internal-tracking)
-- [🧪 Running the Integration Test Suite](#-running-the-integration-test-suite)
-- [📁 Middleware Source Code Structure](#-middleware-source-code-structure)
-- [🔗 Monorepo Navigation](#-monorepo-navigation)
+- [💡 Overview: Why API Versioning?](#-overview-why-api-versioning)
+- [🏛️ Versioning Architecture & Pipeline](#️-versioning-architecture--pipeline)
+- [[Q1] Julian vs. Gregorian Calendar & The "Missing Days"](#q1-julian-vs-gregorian-calendar--the-missing-days)
+- [Breaking vs. Non-Breaking Changes Analysis ([Q2] to [Q8])](#breaking-vs-non-breaking-changes-analysis-q2-to-q8)
+  - [[Q2] Health Check Endpoint](#q2-health-check-endpoint)
+  - [[Q3] Bulk Creation Endpoint](#q3-bulk-creation-endpoint)
+  - [[Q4] Multiple Short Codes for Identical URL](#q4-multiple-short-codes-for-identical-url)
+  - [[Q5] Custom Short Codes](#q5-custom-short-codes)
+  - [[Q6] Edit Requests on Short Codes](#q6-edit-requests-on-short-codes)
+  - [[Q7] Password Protection](#q7-password-protection)
+  - [[Q8] Re-implementing in a New Language (Preserving Contracts)](#q8-re-implementing-in-a-new-language-preserving-contracts)
+- [Industry Versioning Strategies ([Q9] & [Q10])](#industry-versioning-strategies-q9--q10)
+  - [[Q9] Twitter (X) API Versioning](#q9-twitter-x-api-versioning)
+  - [[Q10] Facebook Graph API & GraphQL Versioning](#q10-facebook-graph-api--graphql-versioning)
+- [[Q11] Semantic Versioning & Platform Changelog](#q11-semantic-versioning--platform-changelog)
+- [[Q12] Authentication Migration Guide (v1 → v2)](#q12-authentication-migration-guide-v1--v2)
+- [[Q13] Postman Collection & API Documentation](#q13-postman-collection--api-documentation)
+- [[Q14 BONUS] Unspecified Version Handling: Error vs. Default](#q14-bonus-unspecified-version-handling-error-vs-default)
+- [🧪 Automated Test Suite Execution](#-automated-test-suite-execution)
+- [📁 Project Source Code Structure](#-project-source-code-structure)
 
 ---
 
-## 💡 What is Middleware?
+## 💡 Overview: Why API Versioning?
 
-In backend web development, **middleware** is a software component that intercepts HTTP requests and responses as they travel through an application's execution pipeline. It sits directly between the web server / network layer and the controller route handlers.
+> *"Successful software always gets changed."* — Frederick P. Brooks
 
-### Core Mechanics
+As a backend platform evolves, new features, bug fixes, and security requirements inevitably alter how endpoints operate. If a published API introduces incompatible modifications (such as mandating authentication or renaming fields), existing client applications in production will crash.
 
-A middleware operates in two distinct phases around every request:
-
-1. **Pre-Processing (Inbound Request):**
-   * Executes **before** the controller endpoint logic is triggered.
-   * Can inspect, validate, or modify the incoming `HttpServletRequest` (e.g., headers, query parameters, payload).
-   * **Authentication & Authorization:** Verifies security tokens, API keys, or session identities.
-   * **Short-Circuiting:** If a request fails validation (e.g., missing API key, blacklisted client, invalid permission), the middleware terminates execution immediately and returns an HTTP error response (such as `401 Unauthorized` or `403 Forbidden`). Control never reaches the controller.
-   * **Context Enrichment:** Can attach extracted data to the request context (e.g., `request.setAttribute("authenticatedUser", user)`) so downstream components can access it without redundant database queries.
-
-2. **Delegation:**
-   * Invokes the next component in the chain via `filterChain.doFilter(request, response)`.
-
-3. **Post-Processing (Outbound Response):**
-   * Executes **after** the controller finishes and returns the response, but **before** bytes are transmitted back to the client.
-   * Can inspect the response status code and body.
-   * Can inject or mutate HTTP headers (e.g., security headers, CORS headers, `X-Response-Time`).
-   * Can log metrics, calculate elapsed execution latency, or handle compression (Gzip).
-
-### Why Use Middleware?
-
-* **Centralization of Cross-Cutting Concerns:** Eliminates code duplication by abstracting shared requirements (logging, authentication, rate-limiting, CORS, error formatting) into reusable pipeline stages instead of repeating them in every controller.
-* **Separation of Concerns:** Controllers focus purely on business logic, remaining decoupled from infrastructure, security, and transport-level details.
-* **Fail-Fast Protection:** Unauthorized, malformed, or malicious requests are rejected at the edge of the application, shielding databases, thread pools, and business services from unnecessary load.
+**API Versioning** is the disciplined practice of transparently managing changes to published contracts. It enables service providers to innovate and introduce major security/architectural improvements (API v2) while honoring contracts for legacy clients (API v1) over a predictable deprecation lifecycle.
 
 ---
 
-## 🏗️ Middleware Pipeline Architecture
+## 🏛️ Versioning Architecture & Pipeline
 
-In Spring Boot, middlewares are implemented using servlet filters extending `OncePerRequestFilter`. The diagram below illustrates the exact request/response flow, short-circuit boundaries, context passing, and header injections:
+In this assignment, we engineered a production-grade multi-strategy versioning engine directly into the URL Shortener application:
 
 ```mermaid
 flowchart TD
-    Client(["🌐 HTTP Client"]) -->|"1. Incoming HTTP Request"| M1["ResponseTimeFilter (Order 1 - Outermost)"]
-    M1 -->|"Starts nanoTime counter"| M2["RequestLoggingFilter (Order 2)"]
-    M2 -->|"Logs Method, URL, Client IP, User-Agent & saves to SQLite"| M3["BlacklistFilter (Order 3)"]
+    Req[Incoming HTTP Request] --> M1[1. ResponseTimeFilter]
+    M1 --> M2[2. RequestLoggingFilter]
+    M2 --> M3[3. ApiVersioningFilter]
     
-    M3 -->|"Checks config/blacklist.txt at runtime"| C1{"Is Key Blacklisted?"}
-    C1 -->|"Yes (Malicious)"| R403_B["HTTP 403 Forbidden (Short-Circuit)"]
-    C1 -->|"No / Clean"| M4["ApiKeyAuthenticationFilter (Order 4)"]
+    subgraph VersionResolution ["Version Resolution Engine"]
+        M3 --> CheckPath{"URI starts with /v1 or /v2?"}
+        CheckPath -- Yes --> SetVer[Set Resolved Version]
+        CheckPath -- No --> CheckHeader{"Header X-API-Version set?"}
+        CheckHeader -- Yes --> SetVer
+        CheckHeader -- No --> CheckQuery{"Param ?version= set?"}
+        CheckQuery -- Yes --> SetVer
+        CheckQuery -- No --> CheckAccept{"Accept header content type?"}
+        CheckAccept -- Yes --> SetVer
+        CheckAccept -- No --> Fallback{"api.versioning.unspecified-strategy"}
+        Fallback -- DEFAULT_V1 --> SetV1[Default to v1 + Inject Sunset/Deprecation Headers]
+        Fallback -- REJECT_WITH_ERROR --> Reject400[Return HTTP 400 Bad Request]
+    end
+
+    SetVer --> M4[4. BlacklistFilter]
+    SetV1 --> M4
+    M4 --> M5[5. ApiKeyAuthenticationFilter]
     
-    M4 -->|"Validates API Key against users DB"| C2{"Is Key Valid?"}
-    C2 -->|"No / Missing on protected route"| R401["HTTP 401 Unauthorized (Short-Circuit)"]
-    C2 -->|"Yes"| CTX["[Q7] Sets 'authenticatedUser' in request attribute"]
-    
-    CTX --> M5["TierAuthorizationFilter (Order 5 - Innermost)"]
-    M5 -->|"Checks user.getTier() on /shorten/bulk"| C3{"Enterprise Tier?"}
-    C3 -->|"No (Hobby Tier)"| R403_T["HTTP 403 Forbidden (Short-Circuit)"]
-    C3 -->|"Yes"| CTRL["🎯 DispatcherServlet & UrlShortenerController"]
-    
-    CTRL -->|"Computes response"| M5_R["TierAuthorizationFilter Exit"]
-    M5_R --> M4_R["ApiKeyAuthenticationFilter Exit"]
-    M4_R --> M3_R["BlacklistFilter Exit"]
-    M3_R --> M2_R["RequestLoggingFilter Exit (Updates DB status & latency)"]
-    M2_R --> M1_R["ResponseTimeFilter Exit"]
-    
-    M1_R -->|"Injects X-Response-Time & X-Middleware-Timings headers"| Response(["🚀 HTTP Response to Client"])
+    subgraph AuthGate ["Authentication Enforcement"]
+        M5 --> IsV2{"Resolved Version == V2?"}
+        IsV2 -- Yes --> ReqAuth{"API Key provided & valid?"}
+        ReqAuth -- No --> Reject401[Return HTTP 401 Unauthorized]
+        ReqAuth -- Yes --> AttachUser[Attach User to Request Context]
+        IsV2 -- No --> V1Check{"Protected endpoint like /bulk?"}
+        V1Check -- Yes --> ReqAuth
+        V1Check -- No --> AllowAnon[Allow Anonymous Link Creation]
+    end
+
+    AttachUser --> M6[6. TierAuthorizationFilter]
+    AllowAnon --> M6
+    M6 --> Ctrl[Controller Execution: V1 or V2 Handler]
 ```
 
 ---
 
-## [Q1] Request Logging Middleware
+## [Q1] Julian vs. Gregorian Calendar & The "Missing Days"
 
-### Requirements
-Log incoming request details on every call:
-1. **Timestamp**
-2. **HTTP Method and URL**
-3. **User-Agent**
-4. **Client IP address** (resolving reverse proxy `X-Forwarded-For` when available)
-5. Save logs into a persistent database table and standard application logger.
+### Historical Context
+Introduced by Julius Caesar in 45 BC, the **Julian Calendar** calculated a solar year as **365.25 days**, adding a leap day every 4 years. However, an astronomical tropical year is approximately **365.24219 days** (roughly 11 minutes and 14 seconds shorter). Over sixteen centuries, this minute discrepancy accumulated into an error of about 1 day every 128 years.
 
-### Implementation Details
-- **Filter Class:** [`RequestLoggingFilter.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/RequestLoggingFilter.java)
-- **Entity:** [`RequestLog.java`](url-shortener/src/main/java/com/vyson/urlshortener/entity/RequestLog.java)
-- **Database Table:** `request_logs` (persisted into SQLite database `urlshortener.db`)
-- **Audit Endpoint:** `GET /logs` exposed in `UrlShortenerController` for administrative review.
+By 1582, the calendar had drifted by **10 full days**, causing the vernal equinox to fall on March 11 rather than March 21. Because the calculation of Easter depends on the vernal equinox, Pope Gregory XIII promulgated the papal bull *Inter gravissimas* introducing the **Gregorian Calendar**.
 
-```java
-@Component
-@Order(FilterOrderConstants.REQUEST_LOGGING_ORDER)
-public class RequestLoggingFilter extends OncePerRequestFilter {
+### The Technical Difference: The Leap Year Rule
+The Gregorian Calendar introduced a refinement to century years:
+* **Julian Rule:** Every year divisible by 4 is a leap year.
+* **Gregorian Rule:** A year is a leap year if divisible by 4, **unless** it is divisible by 100, **in which case it must also be divisible by 400**.
+  * Years `1600`, `2000`, `2400` are leap years.
+  * Years `1700`, `1800`, `1900`, `2100` are common years (365 days).
+* This trimmed the average calendar year to **365.2425 days**, reducing the error to just 1 day in 3,030 years.
 
-    private final RequestLogRepository requestLogRepository;
+### The "Missing Days" in History
+To align the calendar with astronomical reality, 10 calendar days were completely eliminated in Catholic countries in October 1582:
+* **Thursday, 4 October 1582** was immediately followed by **Friday, 15 October 1582**.
+* People went to sleep on October 4 and woke up on October 15! The days October 5 through October 14, 1582 never existed.
+* Different nations adopted the Gregorian reform at different times:
+  * **Britain & the American Colonies (1752):** Had drifted by 11 days. Wednesday, 2 September 1752 was followed by Thursday, 14 September 1752.
+  * **Russia (1918):** Following the Bolshevik revolution, Russia was 13 days out of sync. 31 January 1918 was followed by 14 February 1918.
 
-    @Override
-    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-            throws ServletException, IOException {
+### Parallels to Software Engineering & API Breaking Changes
+The calendar reform is history's greatest real-world example of an **API breaking change**:
+1. **Contract Incompatibility:** Systems relying on continuous time arithmetic suffered index offset exceptions.
+2. **Data Migration Challenges:** Contracts, interest calculations, rents, and birthdays had to be retroactively recalculated across the 10-day gap.
+3. **Phased Deprecation & Distributed Adoption:** Because Protestant and Orthodox nations refused Catholic papal authority initially, Europe ran on two competing, incompatible "API versions" (Old Style vs. New Style) for over 300 years, requiring dual date stamps (`e.g., 10/21 February 1613`) much like maintaining dual version endpoints (`/v1` and `/v2`)!
 
-        LocalDateTime timestamp = LocalDateTime.now();
-        String method = request.getMethod();
-        String url = extractFullUrl(request);
-        String userAgent = request.getHeader("User-Agent");
-        String clientIp = extractClientIp(request);
+---
 
-        try {
-            filterChain.doFilter(request, response);
-        } finally {
-            int status = response.getStatus();
-            Long durationMs = extractDuration(request);
+## Breaking vs. Non-Breaking Changes Analysis ([Q2] to [Q8])
 
-            // 1. Persist audit trail directly to SQLite request_logs table
-            RequestLog logEntity = new RequestLog(timestamp, method, url, userAgent, clientIp, status, durationMs);
-            requestLogRepository.save(logEntity);
+A **breaking change** forces consumers to modify their existing client code or fail. A **non-breaking change** is backward compatible, allowing legacy consumers to continue operating without changes.
 
-            // 2. Structured SLF4J log entry
-            log.info("[HTTP AUDIT] Timestamp: {} | Method: {} | URL: {} | IP: {} | Status: {} | Duration: {}ms",
-                    timestamp, method, url, clientIp, status, durationMs);
-        }
-    }
-}
+| Question | Feature Introduced | Change Type | Architectural Justification |
+| :--- | :--- | :---: | :--- |
+| **[Q2]** | `/health` endpoint checkpoint | 🟢 **Non-Breaking** | Additive change. Introduces a new route (`GET /health`) without altering any existing endpoint contracts or schemas. |
+| **[Q3]** | Bulk creation feature (`POST /shorten/bulk`) | 🟢 **Non-Breaking** | Additive change. Existing `/shorten` callers continue to function unaffected; bulk shortening is isolated to a new route. |
+| **[Q4]** | Multiple short codes for the same URL | 🟢 **Non-Breaking** | Preserves request/response schema. Existing clients sending URLs still receive a valid short code and redirect continues to function normally. |
+| **[Q5]** | Custom short code support (`customCode`) | 🟢 **Non-Breaking** | Optional request field. When omitted, the shortener defaults to random Base62 generation, preserving identical behavior for existing callers. |
+| **[Q6]** | Edit requests on short codes (`PUT /shorten/{code}`) | 🟢 **Non-Breaking** | Additive HTTP verb/path. Consumers who only perform shorten and redirect operations are completely unaffected. |
+| **[Q7]** | Password protection on short codes | 🟢 **Non-Breaking** | Optional feature. Unprotected links continue to redirect transparently; only links explicitly created with a password challenge the visitor. |
+| **[Q8]** | Language rewrite (Java → Go/Rust) keeping contracts | 🟢 **Non-Breaking** | Contract encapsulation. HTTP APIs communicate over language-agnostic wire protocols (HTTP, JSON). If headers, status codes, paths, and payloads remain identical, consumers cannot detect internal runtime changes. |
+
+---
+
+## Industry Versioning Strategies ([Q9] & [Q10])
+
+### [Q9] Twitter (X) API Versioning
+Twitter (X) employs **URL Path Versioning** combined with OAuth 2.0 Bearer Token authentication:
+* **Current Latest Version:** **Twitter API v2** (`v2.x`).
+* **Endpoint Pattern:** `https://api.twitter.com/2/tweets`, `https://api.twitter.com/2/users`.
+* **Deprecation Strategy:** Twitter maintains legacy `/1.1` endpoints alongside `/2` under strict deprecation schedules.
+* **Granular Query Projections:** Within v2, Twitter uses query parameters to avoid payload bloat without breaking schemas (e.g., `?tweet.fields=created_at,author_id,public_metrics`).
+
+### [Q10] Facebook Graph API & GraphQL Versioning
+Facebook utilizes a unique versioning cadence for its Graph API:
+* **Current Latest Version:** **Graph API v22.0** (released February 2025).
+* **Versioning Pattern:** Explicit URL path prefix: `https://graph.facebook.com/v22.0/{node-id}`.
+* **Predictable Lifecycle:** Facebook releases a new minor version **quarterly** (every ~90 days) and guarantees a **2-year lifespan** for each version before sunset.
+* **GraphQL Versioning Philosophy:** In pure GraphQL, versioning is traditionally avoided by treating the schema as a continuously evolving graph. Fields are never removed immediately; instead, fields are marked with the `@deprecated(reason: "...")` directive and new fields are added alongside them. However, Facebook's public developer Graph API uses explicit path-based versions (`/v22.0`) to provide firm enterprise stability guarantees.
+
+---
+
+## [Q11] Semantic Versioning & Platform Changelog
+
+We follow [Semantic Versioning 2.0.0](https://semver.org/) (`MAJOR.MINOR.PATCH`):
+* **Major (2.0.0):** Breaking changes (Mandated API key authentication, enriched response models, strict versioning).
+* **Minor (1.3.0, 1.2.0, 1.1.0):** Backward-compatible feature additions (Middlewares, link expiration, bulk creation).
+* **Patch (1.0.1):** Backward-compatible bug fixes.
+
+The platform includes a dedicated, professionally formatted [`CHANGELOG.md`](file:///Users/akshay/url-shortener/CHANGELOG.md) adhering to the [Keep a Changelog](https://keepachangelog.com/) standard.
+
+---
+
+## [Q12] Authentication Migration Guide (v1 → v2)
+
+When transitioning from anonymous link creation (v1) to mandatory API key authentication (v2), consumers require structured guidance to avoid production outages.
+
+We published a comprehensive migration guide: [`MIGRATION_v1_to_v2.md`](file:///Users/akshay/url-shortener/MIGRATION_v1_to_v2.md) covering:
+1. Architectural reasons for mandating authentication (abuse mitigation, quota enforcement, ownership).
+2. 18-month deprecation timeline with RFC 8594 Sunset headers (`Sunset: Wed, 01 Jun 2027 00:00:00 GMT`).
+3. Side-by-side code snippets across **cURL**, **Python**, **JavaScript/Node.js**, and **Java 21**.
+4. JSON response schema diffs and error status resolution table.
+
+---
+
+## [Q13] Postman Collection & API Documentation
+
+A complete, production-ready Postman v2.1 collection is available in the repository:
+📁 [`postman/vyson_url_shortener_v2.postman_collection.json`](file:///Users/akshay/url-shortener/postman/vyson_url_shortener_v2.postman_collection.json)
+
+### Collection Structure:
+1. **V2 Endpoints (Active - Stable):** Authenticated shorten, enterprise bulk, edit, delete, user URLs, and health diagnostics.
+2. **V1 Endpoints (Deprecated):** Anonymous shorten with automated test assertions validating RFC 8594 `Deprecation`, `Sunset`, `Warning`, and `Link` headers.
+3. **Version Negotiation & Resolution:** Requests validating Header-based (`X-API-Version`), Query-based (`?version=`), and Content Negotiation (`Accept: application/vnd.vyson.v2+json`) routing.
+4. **Public Redirection:** `GET /redirect?code={code}` redirect flow assertions.
+
+---
+
+## [Q14 BONUS] Unspecified Version Handling: Error vs. Default
+
+When an API client issues a request to an unversioned URI (e.g. `POST /shorten`) without specifying an API version via URL prefix, header, or query parameter, the backend must decide how to proceed.
+
+### Architectural Comparison of the Two Approaches
+
+```
++----------------------------------------------------------------------------------------------------+
+| OPTION 1: Return an Error (HTTP 400 Bad Request / HTTP 422 Unprocessable Entity)                   |
++----------------------------------------------------------------------------------------------------+
+| 🟢 Pros:                                                                                           |
+|   - Zero Ambiguity: The server never guesses client intent.                                         |
+|   - Contract Enforcement: Forces client developers to explicitly decide and lock in their version. |
+|   - Prevents Silent Breakage: Clients are never unexpectedly migrated to newer behaviors.          |
+| 🔴 Cons:                                                                                           |
+|   - Immediate Outage: Existing unversioned legacy clients break instantly upon deployment.          |
+|   - Hostile Developer Experience: Breaks the core tenet of backward compatibility.                 |
++----------------------------------------------------------------------------------------------------+
+
++----------------------------------------------------------------------------------------------------+
+| OPTION 2: Default to a Version (e.g. Default to V1 or Default to Latest)                           |
++----------------------------------------------------------------------------------------------------+
+| 🟢 Pros:                                                                                           |
+|   - Maximum Backward Compatibility: Existing legacy clients continue operating without failure.     |
+|   - Smooth Upgrade Funnel: Can inject RFC 8594 Sunset/Deprecation headers informing clients.       |
+| 🔴 Cons:                                                                                           |
+|   - Hidden Technical Debt: Clients may never migrate if their code continues to work silently.     |
+|   - Risk of Confusion: Defaulting to "latest" can silently break consumers when major updates ship. |
++----------------------------------------------------------------------------------------------------+
 ```
 
----
+### Our Decision & Justification: The Hybrid Production Pattern
+In production systems, **suddenly breaking active paying clients is unacceptable**. Therefore, our implementation adopts the **Hybrid Production Pattern**:
 
-## [Q2] Route-Specific Middleware Execution
-
-### Question
-*What if we only want to run the above logging middleware for some routes?*
-
-### Solution in Spring Boot
-Two production patterns are supported:
-
-#### Approach 1: Path Matching via `shouldNotFilter(HttpServletRequest)`
-`RequestLoggingFilter` overrides Spring's `OncePerRequestFilter.shouldNotFilter()` using `AntPathMatcher` to skip health endpoints, Swagger, and static assets while filtering core API paths:
-
-```java
-@Override
-protected boolean shouldNotFilter(HttpServletRequest request) {
-    String path = request.getRequestURI();
-
-    // Exclude static and health checks
-    for (String pattern : excludePatterns) {
-        if (pathMatcher.match(pattern, path)) {
-            return true; // Skip filter
-        }
-    }
-    return false; // Apply filter
-}
-```
-
-#### Approach 2: Programmatic `FilterRegistrationBean`
-Demonstrated in [`FilterConfig.java`](url-shortener/src/main/java/com/vyson/urlshortener/config/FilterConfig.java) using `addUrlPatterns()`:
-
-```java
-@Bean
-public FilterRegistrationBean<RequestLoggingFilter> loggingFilterRegistration(RequestLoggingFilter filter) {
-    FilterRegistrationBean<RequestLoggingFilter> registration = new FilterRegistrationBean<>(filter);
-    registration.setOrder(FilterOrderConstants.REQUEST_LOGGING_ORDER);
-    registration.addUrlPatterns("/shorten/*", "/users/*", "/redirect");
-    return registration;
-}
-```
+1. **Default Strategy (`DEFAULT_V1`):**
+   * Unversioned requests are automatically routed to **API v1**.
+   * Legacy integrations continue functioning seamlessly with 100% backward compatibility.
+   * Every response is injected with RFC 8594 `Sunset`, `Deprecation`, and RFC 7234 `Warning` headers alerting client developers that they are running on deprecated contracts.
+2. **Configurable Strict Mode (`REJECT_WITH_ERROR`):**
+   * Governed by `api.versioning.unspecified-strategy=REJECT_WITH_ERROR` in `application.properties`.
+   * For enterprise internal microservices where contract ambiguity cannot be tolerated, strict mode immediately returns `HTTP 400 Bad Request` with structured error feedback.
 
 ---
 
-## [Q3] Authentication Middleware (API Key Validation)
+## 🧪 Automated Test Suite Execution
 
-### Requirements
-Validate incoming API keys from the `X-API-Key` header. If missing or invalid on protected routes, return an error immediately at this step without executing downstream controller logic (short-circuiting).
+The repository features an enterprise-grade automated test suite combining core domain tests, middleware pipeline tests, and comprehensive API versioning tests.
 
-### Implementation Details
-- **Filter Class:** [`ApiKeyAuthenticationFilter.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/ApiKeyAuthenticationFilter.java)
-- **Short-Circuit Mechanism:** If an endpoint requires authentication and the header is missing or non-existent in the database:
-  1. Writes JSON payload: `{"status": 401, "error": "Unauthorized", "message": "Invalid API key provided"}`
-  2. Sets HTTP status `401 Unauthorized`
-  3. Returns immediately without calling `filterChain.doFilter(request, response)`
-
----
-
-## [Q4] Authorization Middleware (Enterprise Tier Check on Bulk Endpoint)
-
-### Requirements
-Decouple the bulk creation authorization logic into a dedicated middleware that verifies if the requesting user's plan is Enterprise.
-
-### Implementation Details
-- **Filter Class:** [`TierAuthorizationFilter.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/TierAuthorizationFilter.java)
-- **Target Routes:** `/shorten/bulk`, `/shorten/bulk/**`
-- **Behavior:**
-  1. Extracts the pre-authenticated user attached by `ApiKeyAuthenticationFilter` (see [Q7](#q7-context-passing-between-middlewares-zero-redundant-db-queries)).
-  2. Verifies `user.getTier().equalsIgnoreCase("enterprise")`.
-  3. If user is on `hobby` tier: short-circuits with `HTTP 403 Forbidden` (`"Bulk creation is only available for enterprise tier users. Please upgrade your plan."`).
-  4. Keeps business controllers decoupled from plan tier enforcement.
-
----
-
-## [Q5] Blacklist Middleware with Dynamic Runtime Config File
-
-### Requirements
-Check the API key against an external configuration file of blocked keys. The file must be read **at runtime** dynamically without restarting the JVM application when updated.
-
-### Implementation Details
-- **Config File:** [`config/blacklist.txt`](url-shortener/config/blacklist.txt)
-- **Service Class:** [`BlacklistService.java`](url-shortener/src/main/java/com/vyson/urlshortener/service/BlacklistService.java)
-- **Filter Class:** [`BlacklistFilter.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/BlacklistFilter.java)
-- **Dynamic File Polling & Caching:**
-  - `BlacklistService` tracks `file.lastModified()`.
-  - When a request arrives, `BlacklistService` checks if `lastModified` has changed. If modified, it dynamically reloads the file into a synchronized thread-safe set in memory.
-  - If a client presents a blacklisted key, execution halts immediately with `HTTP 403 Forbidden` (`"Your API key has been revoked or blacklisted due to suspicious or abusive activity."`), preventing any database lookups.
-
----
-
-## [Q6] Response Time Middleware (Elapsed Duration Header)
-
-### Requirements
-Record the start time as the request enters the middleware, capture the end time when returning, compute elapsed milliseconds, and append an `X-Response-Time` header to the HTTP response.
-
-### Implementation Details
-- **Filter Class:** [`ResponseTimeFilter.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/ResponseTimeFilter.java)
-- **Header Injected:** `X-Response-Time: {ms}ms` (e.g. `X-Response-Time: 3ms`)
-- **Mechanism:** Uses `ContentCachingResponseWrapper` to safely commit custom headers to the response prior to flushing bytes to the HTTP network stream.
-
----
-
-## [Q7] Context Passing Between Middlewares (Zero Redundant DB Queries)
-
-### Requirements
-When user details are fetched from the API key the first time, attach the user object directly to the request context to be reused across downstream filters and controllers without redundant database calls.
-
-### Implementation Details
-1. **Producer (`ApiKeyAuthenticationFilter`):**
-   ```java
-   User authenticatedUser = userRepository.findByApiKey(apiKey.trim())
-           .orElseThrow(() -> ...);
-   request.setAttribute("authenticatedUser", authenticatedUser);
-   ```
-2. **Consumer 1 (`TierAuthorizationFilter`):**
-   ```java
-   User user = (User) request.getAttribute("authenticatedUser");
-   if (!"enterprise".equalsIgnoreCase(user.getTier())) { ... }
-   ```
-3. **Consumer 2 (`UrlShortenerController` & Service):**
-   ```java
-   User user = (User) servletRequest.getAttribute("authenticatedUser");
-   ShortenBulkResponse response = service.bulkShortenUrls(bulkRequest, user, apiKey, baseUrl);
-   ```
-4. **Architectural Benefit:** Zero duplicate DB queries. The `users` table is queried **exactly once** per request.
-
----
-
-## [Q8] Middleware Chaining & Execution Order
-
-### Question
-*What should be the order of the middlewares that you implemented above (logging, authentication, blacklist, etc.)?*
-
-### Production Ordering Hierarchy
-
-| Order | Priority Constant | Filter Name | Architectural Rationale |
-|:---:|:---|:---|:---|
-| **1** | `HIGHEST_PRECEDENCE` | **`ResponseTimeFilter`** | **Outermost Wrapper.** Must start first and finish last to calculate the complete end-to-end roundtrip latency. |
-| **2** | `HIGHEST_PRECEDENCE + 10` | **`RequestLoggingFilter`** | **Observability & Auditing.** Must capture all inbound traffic metadata (IP, Method, Path) before authentication or security drops occur. |
-| **3** | `HIGHEST_PRECEDENCE + 20` | **`BlacklistFilter`** | **Fast Malicious Traffic Dropping.** Evaluates API keys against the file-based blacklist. Drops abusive keys with `403 Forbidden` *before* doing expensive database lookups. |
-| **4** | `HIGHEST_PRECEDENCE + 30` | **`ApiKeyAuthenticationFilter`** | **Identity Resolution.** Validates key against the SQLite database and attaches `authenticatedUser` to request context. |
-| **5** | `HIGHEST_PRECEDENCE + 40` | **`TierAuthorizationFilter`** | **Permission Enforcement.** Innermost guard before the controller. Verifies plan requirements (e.g. Enterprise on bulk endpoint). |
-| **6** | Endpoint Target | **`UrlShortenerController`** | **Business Logic.** Receives authenticated, authorized, and audited requests. |
-
----
-
-## [Q9 BONUS] Timing Each Middleware for Internal Tracking
-
-### Requirements
-Time each middleware independently and log how much time each filter is taking for internal diagnostics and profiling.
-
-### Implementation Details
-- **Profiler Utility:** [`MiddlewareTimer.java`](url-shortener/src/main/java/com/vyson/urlshortener/filter/MiddlewareTimer.java)
-- **Micro-Profiling:** Each filter records its own internal execution time (excluding downstream delegation) into thread-safe request attributes:
-  ```java
-  long start = System.nanoTime();
-  // Filter internal work (e.g., file reading, DB lookup)
-  long duration = System.nanoTime() - start;
-  MiddlewareTimer.record(request, "ApiKeyAuthenticationFilter", duration);
-  ```
-- **Diagnostics Header Added:**
-  ```http
-  X-Middleware-Timings: ResponseTimeFilter=0.00ms, BlacklistFilter=0.04ms, ApiKeyAuthenticationFilter=0.62ms, RequestLoggingFilter=0.60ms, Controller=3.25ms, Total=4.51ms
-  ```
-- **Log Output:**
-  ```text
-  [RESPONSE TIME] POST /shorten/bulk -> Status: 201 | Elapsed: 7ms | Timings: [ResponseTimeFilter=0.00ms, BlacklistFilter=0.04ms, ApiKeyAuthenticationFilter=0.62ms, RequestLoggingFilter=0.60ms, Controller=3.25ms, Total=4.51ms]
-  ```
-
----
-
-## 🧪 Running the Integration Test Suite
-
-The project includes 21 comprehensive integration tests covering all core features and all 9 middleware questions:
-
+### Running All Tests
 ```bash
 cd url-shortener
-./mvnw test
+./mvnw clean test
 ```
 
-### Verified Test Cases (`MiddlewareIntegrationTests.java`):
-1. ✅ `testRequestLoggingMiddlewareSavesToDatabase` — Validates [Q1] audit record creation in SQLite `request_logs`.
-2. ✅ `testRouteFilteringSkipsExcludedPaths` — Validates [Q2] excluded path bypassing.
-3. ✅ `testAuthenticationMiddlewareRejection` — Validates [Q3] HTTP 401 short-circuiting on missing/invalid keys.
-4. ✅ `testTierAuthorizationMiddleware` — Validates [Q4] HTTP 403 blocking on hobby tier for bulk creation.
-5. ✅ `testBlacklistMiddlewareWithRuntimeReload` — Validates [Q5] dynamic file modification detection without JVM restart.
-6. ✅ `testResponseTimeMiddlewareHeader` — Validates [Q6] presence of `X-Response-Time` header.
-7. ✅ `testContextPassingAcrossMiddlewares` — Validates [Q7] context attribute reuse preventing duplicate DB queries.
-8. ✅ `testMiddlewareExecutionOrderAndChaining` — Validates [Q8] pipeline order and short-circuit sequence.
-9. ✅ `testPerMiddlewareTimingTracker` — Validates [Q9 BONUS] presence and precision of `X-Middleware-Timings`.
+### Verified Test Suite Breakdown (34 Tests Passing):
+
+| Test Class | Category | Tests | Key Scenarios Validated |
+| :--- | :--- | :---: | :--- |
+| `UrlShortenerIntegrationTests` | Core Domain | 12 | Base62 generation, 302 redirection, empty URL 400 rejection, click counters, custom codes, link expiration, password protection. |
+| `MiddlewareIntegrationTests` | Pipeline Filters | 9 | Request logging to SQLite, route exclusion (`/health`), API key authentication, enterprise bulk authorization, runtime file blacklist, response time profiling. |
+| `ApiVersioningIntegrationTests` | Versioning Engine | 13 | URL path versioning (`/v1` vs `/v2`), RFC 8594 Sunset/Deprecation headers, v2 mandatory auth breaking change, Header versioning, Query param versioning, Content Negotiation, Default v1 fallback, Strict mode rejection, V2 diagnostic health, Enterprise bulk v2. |
+| **Total** | | **34** | **100% Passing (0 Failures, 0 Errors, 0 Skipped)** |
 
 ---
 
-## 📁 Middleware Source Code Structure
+## 📁 Project Source Code Structure
 
-```text
+```
 url-shortener/
-├── config/
-│   └── blacklist.txt                     # [Q5] Dynamic runtime blacklist config file
-└── src/
-    ├── main/java/com/vyson/urlshortener/
-    │   ├── config/
-    │   │   └── FilterConfig.java         # [Q2 & Q8] Filter registration & URL pattern configuration
-    │   ├── entity/
-    │   │   └── RequestLog.java           # [Q1] Request log JPA entity for SQLite persistence
-    │   ├── filter/
-    │   │   ├── ApiKeyAuthenticationFilter.java  # [Q3 & Q7] API key auth & user context passing
-    │   │   ├── BlacklistFilter.java             # [Q5] Blacklist enforcement middleware
-    │   │   ├── FilterOrderConstants.java        # [Q8] Centralized priority ordering constants
-    │   │   ├── FilterResponseHelper.java        # Standardized JSON error response writer
-    │   │   ├── MiddlewareConstants.java         # Shared attribute names & header constants
-    │   │   ├── MiddlewareTimer.java             # [Q9 BONUS] Micro-profiler execution timer
-    │   │   ├── RequestLoggingFilter.java        # [Q1 & Q2] Request auditing & route filtering
-    │   │   ├── ResponseTimeFilter.java          # [Q6 & Q9] Elapsed response time & timing headers
-    │   │   └── TierAuthorizationFilter.java     # [Q4] Enterprise tier authorization middleware
-    │   ├── repository/
-    │   │   └── RequestLogRepository.java # [Q1] Spring Data JPA repository for request logs
-    │   └── service/
-    │       └── BlacklistService.java     # [Q5] Dynamic file watcher & cache service
-    └── test/java/com/vyson/urlshortener/
-        └── MiddlewareIntegrationTests.java # 9 comprehensive JUnit 5 / MockMvc tests
+├── src/
+│   ├── main/
+│   │   ├── java/com/vyson/urlshortener/
+│   │   │   ├── config/
+│   │   │   │   ├── DataInitializer.java        # Seeds sample users (Alice, Bob, Enterprise)
+│   │   │   │   └── FilterConfig.java           # Central middleware filter chaining & ordering
+│   │   │   ├── controller/
+│   │   │   │   ├── UrlShortenerController.java   # Root controller with dynamic version adaptation
+│   │   │   │   ├── UrlShortenerV1Controller.java # Legacy v1 controller (anonymous allowed, deprecated)
+│   │   │   │   └── UrlShortenerV2Controller.java # Modern v2 controller (mandatory auth, enriched schema)
+│   │   │   ├── dto/
+│   │   │   │   ├── ShortenRequest.java
+│   │   │   │   ├── ShortenResponse.java          # Flat v1 response DTO
+│   │   │   │   ├── ShortenV2Response.java        # Enriched v2 response DTO with owner & metadata
+│   │   │   │   ├── ShortenBulkRequest.java
+│   │   │   │   └── ShortenBulkV2Response.java
+│   │   │   ├── filter/
+│   │   │   │   ├── FilterOrderConstants.java     # Chaining order constants (Order 1 to 6)
+│   │   │   │   ├── MiddlewareConstants.java      # Context attributes & HTTP header keys
+│   │   │   │   ├── ResponseTimeFilter.java       # Order 1: X-Response-Time profiler
+│   │   │   │   ├── RequestLoggingFilter.java     # Order 2: SQLite request logger
+│   │   │   │   ├── BlacklistFilter.java          # Order 4: Runtime file blacklist filter
+│   │   │   │   ├── ApiKeyAuthenticationFilter.java# Order 5: API key auth & v2 breaking gate
+│   │   │   │   └── TierAuthorizationFilter.java  # Order 6: Enterprise tier validator
+│   │   │   ├── versioning/
+│   │   │   │   ├── ApiVersion.java               # Enum: V1, V2, UNSPECIFIED
+│   │   │   │   ├── ApiVersioningProperties.java  # Configuration: UnspecifiedStrategy, Sunset dates
+│   │   │   │   ├── ApiVersionResolver.java       # Path, Header, Query, Accept resolver
+│   │   │   │   └── ApiVersioningFilter.java      # Order 3: Version resolution & RFC 8594 headers
+│   │   │   └── service/
+│   │   │       ├── UrlShortenerService.java      # Core business service with v1 & v2 builders
+│   │   │       └── BlacklistService.java
+│   │   └── resources/
+│   │       └── application.properties           # SQLite, Hikari, Logging, and Versioning settings
+│   └── test/
+│       └── java/com/vyson/urlshortener/
+│           ├── UrlShortenerIntegrationTests.java # 12 core domain tests
+│           ├── MiddlewareIntegrationTests.java   # 9 middleware tests
+│           └── ApiVersioningIntegrationTests.java# 13 API versioning tests
+├── postman/
+│   └── vyson_url_shortener_v2.postman_collection.json # Complete Postman v2.1 collection
+├── CHANGELOG.md                                 # SemVer 2.0.0 changelog (v1.0.0 to v2.0.0)
+├── MIGRATION_v1_to_v2.md                        # Developer migration guide
+└── pom.xml
 ```
-
----
-
-## 🔗 Monorepo Navigation
-
-* To see the previous milestones documentation (Base62 URL Shortener & Analytics): [URL Shortener Project Readme](url-shortener/README.md)
-* To switch back to production baseline: Checkout the [`main`](https://github.com/AkshayMadan098/Backend-projects/tree/main) branch.

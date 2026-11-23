@@ -1331,3 +1331,114 @@ All middlewares are verified through Spring Boot's `@SpringBootTest` and `MockMv
 ```
 **Results:** `Tests run: 21, Failures: 0, Errors: 0, Skipped: 0` (100% Passing).
 
+---
+
+# 📦 VYSONM2A4: API Versioning Architecture & Implementation
+
+> **Branch:** [`feature/m2a4-api-versioning`](https://github.com/AkshayMadan098/Backend-projects/tree/feature/m2a4-api-versioning)  
+> **Project:** URL Shortener & Analytics Platform (Milestone 2, Assignment 4)  
+> **Tech Stack:** Java 21 (LTS), Spring Boot 3.3.5, Spring Data JPA, Hibernate 6, SQLite 3 (WAL mode), JUnit 5, MockMvc  
+> **Test Status:** ✅ **34/34 Automated Tests Passing** (12 Core Tests + 9 Middleware Tests + 13 Versioning Tests)
+
+---
+
+## 📑 Table of Contents (M2A4)
+
+- [💡 Overview: Why API Versioning?](#-overview-why-api-versioning-1)
+- [🏛️ Versioning Architecture & Pipeline](#️-versioning-architecture--pipeline-1)
+- [[Q1] Julian vs. Gregorian Calendar & The "Missing Days"](#q1-julian-vs-gregorian-calendar--the-missing-days-1)
+- [Breaking vs. Non-Breaking Changes Analysis ([Q2] to [Q8])](#breaking-vs-non-breaking-changes-analysis-q2-to-q8-1)
+- [Industry Versioning Strategies ([Q9] & [Q10])](#industry-versioning-strategies-q9--q10-1)
+- [[Q11] Semantic Versioning & Platform Changelog](#q11-semantic-versioning--platform-changelog-1)
+- [[Q12] Authentication Migration Guide (v1 → v2)](#q12-authentication-migration-guide-v1--v2-1)
+- [[Q13] Postman Collection & API Documentation](#q13-postman-collection--api-documentation-1)
+- [[Q14 BONUS] Unspecified Version Handling: Error vs. Default](#q14-bonus-unspecified-version-handling-error-vs-default-1)
+- [🧪 Automated Test Suite Execution (34 Tests)](#-automated-test-suite-execution-34-tests)
+
+---
+
+## 💡 Overview: Why API Versioning?
+
+As an API evolves, incompatible changes (such as mandating authentication or renaming fields) crash existing consumers. **API Versioning** is the practice of transparently managing changes to published contracts, allowing service providers to release modern security enhancements (v2) while preserving legacy contracts (v1) over a structured deprecation lifecycle.
+
+---
+
+## [Q1] Julian vs. Gregorian Calendar & The "Missing Days"
+
+* **The Problem:** The Julian Calendar calculated a year as 365.25 days, drifting 1 day every 128 years behind the actual astronomical tropical year (~365.2422 days). By 1582, the calendar had drifted by 10 full days.
+* **The Technical Solution:** Pope Gregory XIII introduced the Gregorian Calendar with a modified leap year rule: century years are only leap years if divisible by 400 (e.g. 1600 and 2000 were leap years; 1700, 1800, and 1900 were not).
+* **The "Missing Days":** To correct the drift, Thursday, 4 October 1582 was immediately followed by Friday, 15 October 1582, skipping 10 days in history. When Britain adopted it in 1752, 11 days were skipped; Russia skipped 13 days in 1918.
+* **API Analogy:** This is history's greatest breaking change: calendar consumers had to migrate date arithmetic, and competing versions ("Old Style" vs "New Style") ran in parallel across Europe for centuries, exactly like maintaining dual versioned endpoints (`/v1` and `/v2`).
+
+---
+
+## Breaking vs. Non-Breaking Changes Analysis ([Q2] to [Q8])
+
+* **[Q2] Health check (`/health`):** 🟢 **Non-Breaking** — Additive endpoint; does not modify existing contracts.
+* **[Q3] Bulk creation (`/shorten/bulk`):** 🟢 **Non-Breaking** — New isolated route.
+* **[Q4] Multiple short codes for identical URL:** 🟢 **Non-Breaking** — Schema and behavior remain valid; callers still receive short codes and redirects work.
+* **[Q5] Custom short codes (`customCode`):** 🟢 **Non-Breaking** — Optional request field with fallback to Base62.
+* **[Q6] Edit requests (`PUT /shorten/{code}`):** 🟢 **Non-Breaking** — Additive HTTP method.
+* **[Q7] Password protection:** 🟢 **Non-Breaking** — Optional field; unprotected links redirect normally without prompting.
+* **[Q8] Language rewrite preserving contracts:** 🟢 **Non-Breaking** — HTTP API consumers interact over network wire contracts (HTTP/JSON), completely abstracted from internal runtime changes.
+
+---
+
+## Industry Versioning Strategies ([Q9] & [Q10])
+
+* **[Q9] Twitter (X) API:**
+  * Uses **URL Path Versioning** (`/1.1/...`, `/2/...`).
+  * Current latest version is **Twitter API v2** (`v2.x`).
+  * Uses query field projections (`?tweet.fields=...`) to avoid breaking schema changes.
+* **[Q10] Facebook Graph API & GraphQL:**
+  * Uses explicit URL path versioning: `https://graph.facebook.com/v22.0/...`.
+  * Current latest version is **Graph API v22.0** (released quarterly with a 2-year deprecation guarantee).
+  * In GraphQL, versioning is typically schema-evolution-based (adding new fields, marking fields `@deprecated` instead of versioning endpoints).
+
+---
+
+## [Q11] Semantic Versioning & Platform Changelog
+
+We adhere to SemVer 2.0.0 and maintain a complete [`CHANGELOG.md`](../CHANGELOG.md) documenting:
+* `[2.0.0]` - Major release: Breaking change requiring mandatory API key authentication on URL creation, introduced URL path versioning (`/v1` vs `/v2`), deprecation and sunset headers for v1, enriched v2 response schema with owner and tier metadata.
+* `[1.3.0]` - Middlewares pipeline.
+* `[1.2.0]` - Link lifecycle & security.
+* `[1.1.0]` - Enterprise features & analytics.
+* `[1.0.0]` - Initial release.
+
+---
+
+## [Q12] Authentication Migration Guide (v1 → v2)
+
+See [`MIGRATION_v1_to_v2.md`](../MIGRATION_v1_to_v2.md) for complete details:
+* Mandates `X-API-Key` on URL creation to prevent abuse and enforce rate limits.
+* RFC 8594 Sunset period through June 1, 2027.
+* Code samples before vs. after in cURL, Python, JavaScript, and Java.
+
+---
+
+## [Q13] Postman Collection & API Documentation
+
+A complete collection is exported at [`postman/vyson_url_shortener_v2.postman_collection.json`](../postman/vyson_url_shortener_v2.postman_collection.json) covering V1, V2, Version Negotiation, and Public Redirection with automated test scripts.
+
+---
+
+## [Q14 BONUS] Unspecified Version Handling: Error vs. Default
+
+* **Error Rejection (Option 1):** Strict contract enforcement, but breaks existing unversioned clients upon release.
+* **Default Versioning (Option 2):** High backward compatibility, but risks silent deprecation drift if clients don't notice warnings.
+* **Our Production Hybrid Approach:**
+  * Configurable via `api.versioning.unspecified-strategy`:
+    * `DEFAULT_V1`: Transparently routes unversioned requests to V1 while injecting RFC 8594 `Sunset`, `Deprecation`, and RFC 7234 `Warning` headers alerting consumers.
+    * `REJECT_WITH_ERROR`: Strict mode returning `HTTP 400 Bad Request` requiring explicit version specification.
+
+---
+
+## 🧪 Automated Test Suite Execution (34 Tests)
+
+```bash
+./mvnw clean test
+```
+**Results:** `Tests run: 34, Failures: 0, Errors: 0, Skipped: 0` (100% Passing).
+
+
