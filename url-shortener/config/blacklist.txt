@@ -1,0 +1,8 @@
+# Blacklist Configuration File (VYSONM2A3)
+# One API key per line. Lines starting with # or empty lines are ignored.
+# This file is read dynamically at runtime -- changes take effect immediately without restarting the application.
+
+# Blocked notorious spammer keys:
+ak_live_spammer999
+ak_live_notorious_bot
+ak_live_abusive_client_888
