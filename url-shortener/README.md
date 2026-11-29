@@ -24,6 +24,17 @@ A high-performance, production-ready URL Shortener REST API built with **Java 21
 - [[Q11 BONUS] Should Short Codes Be Mutable?](#q11-bonus-should-short-codes-be-mutable)
 - [[Q12 BONUS] Deploying the API Online](#q12-bonus-deploying-the-api-online)
 - [[Q13 BONUS] Cloud Database Migration & Latency Comparison](#q13-bonus-cloud-database-migration--latency-comparison)
+- [🛡️ VYSONM2A3: Middlewares Architecture & Implementation](#️-vysonm2a3-middlewares-architecture--implementation)
+  - [💡 What is Middleware?](#-what-is-middleware)
+  - [[Q1] Request Logging Middleware](#q1-request-logging-middleware)
+  - [[Q2] Route-Specific Middleware Execution](#q2-route-specific-middleware-execution)
+  - [[Q3] Authentication Middleware (API Key Validation)](#q3-authentication-middleware-api-key-validation)
+  - [[Q4] Authorization Middleware (Enterprise Tier Check on Bulk Endpoint)](#q4-authorization-middleware-enterprise-tier-check-on-bulk-endpoint)
+  - [[Q5] Blacklist Middleware with Dynamic Runtime Config File](#q5-blacklist-middleware-with-dynamic-runtime-config-file)
+  - [[Q6] Response Time Middleware (Elapsed Duration Header)](#q6-response-time-middleware-elapsed-duration-header)
+  - [[Q7] Context Passing Between Middlewares](#q7-context-passing-between-middlewares-avoiding-duplicate-db-queries)
+  - [[Q8] Middleware Chaining & Execution Order](#q8-middleware-chaining--execution-order)
+  - [[Q9 BONUS] Timing Each Middleware for Internal Tracking](#q9-bonus-timing-each-middleware-for-internal-tracking)
 
 ---
 
@@ -950,3 +961,373 @@ Separating user identities from credentials (e.g. `user_credentials` or `api_key
 2. **Supporting 1:Many Credentials:** Real-world enterprise systems require multiple credentials per user (e.g., multiple API keys with separate scopes like `test_key` vs `prod_key`, or password + OAuth tokens + passkeys).
 3. **Auditability & Rotation:** Allows tracking credential metadata independently (`last_used_at`, `expires_at`, `revoked_at`, `created_from_ip`) and rotating secrets without modifying the user profile.
 4. **Independent Encryption & Storage Policies:** Security standards (PCI-DSS, SOC 2) require stricter encryption-at-rest policies and tighter access controls for credential tables than general user profile data.
+
+---
+
+# 🛡️ VYSONM2A3: Middlewares Architecture & Implementation
+
+## 💡 What is Middleware?
+
+In backend web development, **middleware** is a software component that intercepts HTTP requests and responses as they travel through an application's execution pipeline. It sits directly between the web server / network layer and the controller route handlers.
+
+### Core Mechanics
+
+A middleware operates in two distinct phases around every request:
+
+1. **Pre-Processing (Inbound Request):**
+   * Executes **before** the controller endpoint logic is triggered.
+   * Can inspect, validate, or modify the incoming `HttpServletRequest` (e.g., headers, query parameters, payload).
+   * **Authentication & Authorization:** Verifies security tokens, API keys, or session identities.
+   * **Short-Circuiting:** If a request fails validation (e.g., missing API key, blacklisted client, invalid permission), the middleware terminates execution immediately and returns an HTTP error response (such as `401 Unauthorized` or `403 Forbidden`). Control never reaches the controller.
+   * **Context Enrichment:** Can attach extracted data to the request context (e.g., `request.setAttribute("authenticatedUser", user)`) so downstream components can access it without redundant database queries.
+
+2. **Delegation:**
+   * Invokes the next component in the chain via `filterChain.doFilter(request, response)`.
+
+3. **Post-Processing (Outbound Response):**
+   * Executes **after** the controller finishes and returns the response, but **before** bytes are transmitted back to the client.
+   * Can inspect the response status code and body.
+   * Can inject or mutate HTTP headers (e.g., security headers, CORS headers, `X-Response-Time`).
+   * Can log metrics, calculate elapsed execution latency, or handle compression (Gzip).
+
+### Why Use Middleware?
+
+* **Centralization of Cross-Cutting Concerns:** Eliminates code duplication by abstracting shared requirements (logging, authentication, rate-limiting, CORS, error formatting) into reusable pipeline stages instead of repeating them in every controller.
+* **Separation of Concerns:** Controllers focus purely on business logic, remaining decoupled from infrastructure, security, and transport-level details.
+* **Fail-Fast Protection:** Unauthorized, malformed, or malicious requests are rejected at the edge of the application, shielding databases, thread pools, and business services from unnecessary load.
+
+---
+
+## 🏗️ Middleware Pipeline Architecture
+
+In Spring Boot, middlewares form the foundational backbone for cross-cutting concerns: interception, security, observability, auditing, rate limiting, and request transformation. They act as a bridge executing logic **before** a request hits the controller and **after** the response is computed.
+
+```mermaid
+flowchart TD
+    Client(["HTTP Client"]) -->|"1. Incoming Request"| M1["ResponseTimeFilter (Order 1 - Outermost)"]
+    M1 -->|"Starts high-precision timer"| M2["RequestLoggingFilter (Order 2)"]
+    M2 -->|"Logs Method, URL, IP, User-Agent & saves to DB"| M3["BlacklistFilter (Order 3)"]
+    
+    M3 -->|"Checks config/blacklist.txt at runtime"| C1{"Is Key Blacklisted?"}
+    C1 -->|"Yes (Malicious)"| R403_B["HTTP 403 Forbidden (Short-Circuit)"]
+    C1 -->|"No / Clean"| M4["ApiKeyAuthenticationFilter (Order 4)"]
+    
+    M4 -->|"Validates API Key against DB"| C2{"Is Key Valid?"}
+    C2 -->|"No / Missing on protected route"| R401["HTTP 401 Unauthorized (Short-Circuit)"]
+    C2 -->|"Yes"| CTX["[Q7] Sets 'authenticatedUser' in request attribute"]
+    
+    CTX --> M5["TierAuthorizationFilter (Order 5 - Innermost)"]
+    M5 -->|"Checks user.getTier() on /shorten/bulk"| C3{"Enterprise Tier?"}
+    C3 -->|"No (Hobby Tier)"| R403_T["HTTP 403 Forbidden (Short-Circuit)"]
+    C3 -->|"Yes"| CTRL["Controller & Business Logic"]
+    
+    CTRL -->|"Computes response"| M5_R["TierAuthorizationFilter Exit"]
+    M5_R --> M4_R["ApiKeyAuthenticationFilter Exit"]
+    M4_R --> M3_R["BlacklistFilter Exit"]
+    M3_R --> M2_R["RequestLoggingFilter Exit (Updates DB status & latency)"]
+    M2_R --> M1_R["ResponseTimeFilter Exit"]
+    
+    M1_R -->|"Calculates elapsed ms & adds X-Response-Time & X-Middleware-Timings headers"| Response(["HTTP Response to Client"])
+```
+
+---
+
+## [Q1] Request Logging Middleware
+
+### Requirements
+Log the following details on every request:
+1. **Timestamp**
+2. **HTTP Method and URL**
+3. **User-Agent**
+4. **Client IP address** (with reverse-proxy `X-Forwarded-For` resolution)
+5. Save the logs in a file or a database table.
+
+### Implementation
+- **Filter Class:** `com.vyson.urlshortener.filter.RequestLoggingFilter`
+- **JPA Entity:** `com.vyson.urlshortener.entity.RequestLog`
+- **Database Table:** `request_logs` (stored in embedded SQLite `urlshortener.db`)
+- **SLF4J Logger:** Outputs structured logs to standard logging appenders / log files.
+
+```java
+@Component
+@Order(FilterOrderConstants.REQUEST_LOGGING_ORDER)
+public class RequestLoggingFilter extends OncePerRequestFilter {
+
+    private final RequestLogRepository requestLogRepository;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        LocalDateTime timestamp = LocalDateTime.now();
+        String method = request.getMethod();
+        String url = extractFullUrl(request);
+        String userAgent = request.getHeader("User-Agent");
+        String clientIp = extractClientIp(request);
+
+        try {
+            filterChain.doFilter(request, response);
+        } finally {
+            int status = response.getStatus();
+            Long durationMs = extractDuration(request);
+
+            // 1. Persist to SQLite database table (Q1)
+            RequestLog logEntity = new RequestLog(timestamp, method, url, userAgent, clientIp, status, durationMs);
+            requestLogRepository.save(logEntity);
+
+            // 2. Output to application log file (Q1)
+            log.info("[HTTP LOG] Timestamp: {} | Method: {} | URL: {} | IP: {} | User-Agent: {} | Status: {} | Duration: {}ms",
+                    timestamp, method, url, clientIp, userAgent, status, durationMs);
+        }
+    }
+}
+```
+
+---
+
+## [Q2] Route-Specific Middleware Execution
+
+### Question
+*What if we only want to run the above logging middleware for some routes?*
+
+### Solution in Spring Boot
+In Spring Boot, there are two production-grade approaches to route-level middleware scoping:
+
+#### Approach 1: `OncePerRequestFilter.shouldNotFilter()` with `AntPathMatcher` (Used in implementation)
+Override `shouldNotFilter(HttpServletRequest request)` to selectively include or exclude routes dynamically based on path patterns:
+
+```java
+@Override
+protected boolean shouldNotFilter(HttpServletRequest request) {
+    String path = request.getRequestURI();
+
+    // 1. Route Exclusions (e.g. skip internal health checks, static assets, swagger)
+    for (String pattern : excludePatterns) {
+        if (pathMatcher.match(pattern, path)) {
+            return true; // Skip filtering
+        }
+    }
+
+    // 2. Route Inclusions (e.g. only target core API routes: /shorten/**, /users/**)
+    for (String pattern : includePatterns) {
+        if (pathMatcher.match(pattern, path)) {
+            return false; // Apply filter
+        }
+    }
+
+    return true; // Skip if not explicitly included
+}
+```
+
+#### Approach 2: Programmatic `FilterRegistrationBean.addUrlPatterns()`
+Configure explicit URL pattern mappings in a Spring `@Configuration` bean:
+
+```java
+@Bean
+public FilterRegistrationBean<RequestLoggingFilter> loggingFilterRegistration(RequestLoggingFilter filter) {
+    FilterRegistrationBean<RequestLoggingFilter> registration = new FilterRegistrationBean<>(filter);
+    registration.setOrder(FilterOrderConstants.REQUEST_LOGGING_ORDER);
+    registration.addUrlPatterns("/shorten/*", "/users/*", "/redirect"); // Specific routes only
+    return registration;
+}
+```
+
+---
+
+## [Q3] Authentication Middleware (API Key Validation)
+
+### Requirements
+Check whether the provided API key is valid or not. If not, return the request at this step itself without running the endpoint logic (short-circuit).
+
+### Implementation
+- **Filter Class:** `com.vyson.urlshortener.filter.ApiKeyAuthenticationFilter`
+- **Behavior:**
+  1. If an endpoint requires authentication (e.g. `/shorten/bulk`, `/users/urls`) and the API key is missing:
+     - Returns **HTTP 401 Unauthorized** with `{"status": 401, "error": "Unauthorized", "message": "API key is required for this endpoint"}`.
+     - Does **not** call `filterChain.doFilter()`. The request terminates immediately.
+  2. If an API key is provided:
+     - Queries `userRepository.findByApiKey(apiKey)`.
+     - If non-existent / invalid: returns **HTTP 401 Unauthorized** with `{"status": 401, "error": "Unauthorized", "message": "Invalid API key provided"}`.
+     - If valid: attaches the resolved `User` to `request.setAttribute("authenticatedUser", user)` (see Q7).
+
+---
+
+## [Q4] Authorization Middleware (Enterprise Tier Check on Bulk Endpoint)
+
+### Requirements
+In the bulk endpoint, move the authorization logic to a middleware that checks if the plan is enterprise or not. This makes tier authorization reusable for future endpoints.
+
+### Implementation
+- **Filter Class:** `com.vyson.urlshortener.filter.TierAuthorizationFilter`
+- **Target Routes:** `/shorten/bulk`, `/shorten/bulk/**` (and future enterprise endpoints)
+- **Behavior:**
+  1. Retrieves the pre-authenticated user from request attribute:
+     `User user = (User) request.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);`
+  2. Verifies tier:
+     ```java
+     if (!"enterprise".equalsIgnoreCase(user.getTier())) {
+         FilterResponseHelper.writeErrorResponse(
+             response,
+             HttpStatus.FORBIDDEN,
+             "Forbidden",
+             "Bulk creation is only available for enterprise tier users. Please upgrade your plan."
+         );
+         return; // Short-circuit pipeline!
+     }
+     ```
+  3. Reusability: By externalizing tier checks from the service into a dedicated filter, future enterprise features (e.g., batch deletions, advanced analytics, custom domain provisioning) can be secured simply by mapping the route pattern to this middleware without duplicating authorization boilerplate.
+
+---
+
+## [Q5] Blacklist Middleware with Dynamic Runtime Config File
+
+### Requirements
+Create a blacklist middleware that checks the API key from a config file where notorious user keys can be blocked. This file must be read **at runtime** (not static in code).
+
+### Implementation
+- **Config File:** `config/blacklist.txt` (tracked under version control, external path configurable via `blacklist.file.path`)
+- **Service Class:** `com.vyson.urlshortener.service.BlacklistService`
+- **Filter Class:** `com.vyson.urlshortener.filter.BlacklistFilter`
+- **Dynamic Runtime Reloading:**
+  - `BlacklistService` maintains an atomic cache and tracks `file.lastModified()`.
+  - When a request arrives with an API key, `BlacklistService` checks if `file.lastModified()` has changed.
+  - If updated (e.g., an engineer or automated defense system appends a malicious key to `config/blacklist.txt`), the file is immediately re-read into memory at runtime **without requiring a JVM restart**.
+  - If a key matches:
+    - Returns **HTTP 403 Forbidden** with `{"status": 403, "error": "Forbidden", "message": "Your API key has been revoked or blacklisted due to suspicious or abusive activity."}`.
+    - Prevents malicious clients from hitting database queries or downstream services.
+
+---
+
+## [Q6] Response Time Middleware (Elapsed Duration Header)
+
+### Requirements
+Store the start time when the request passes through this middleware. While coming back, see the end time, calculate the difference as elapsed time, and add this to the response header.
+
+### Implementation
+- **Filter Class:** `com.vyson.urlshortener.filter.ResponseTimeFilter`
+- **Execution Position:** Order 1 (Outermost wrapper)
+- **Header Added:** `X-Response-Time: {ms}ms` (e.g., `X-Response-Time: 4ms`)
+
+```java
+@Component
+@Order(FilterOrderConstants.RESPONSE_TIME_ORDER)
+public class ResponseTimeFilter extends OncePerRequestFilter {
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+
+        long startNanos = System.nanoTime();
+        ContentCachingResponseWrapper responseWrapper = new ContentCachingResponseWrapper(response);
+
+        try {
+            filterChain.doFilter(request, responseWrapper);
+        } finally {
+            long totalNanos = System.nanoTime() - startNanos;
+            long totalMs = totalNanos / 1_000_000;
+
+            // [Q6] Add elapsed time to response header
+            responseWrapper.setHeader("X-Response-Time", totalMs + "ms");
+
+            // Flush response buffer to client
+            responseWrapper.copyBodyToResponse();
+        }
+    }
+}
+```
+
+---
+
+## [Q7] Context Passing Between Middlewares (Avoiding Duplicate DB Queries)
+
+### Requirements
+When user details are fetched from the API key the first time, set this user object in the request itself so it goes on to be used directly in downstream middlewares and endpoints without calling the database twice.
+
+### Implementation
+1. **Authentication Filter sets the attribute:**
+   ```java
+   User authenticatedUser = userRepository.findByApiKey(apiKey.trim())
+           .orElseThrow(() -> ...);
+   request.setAttribute("authenticatedUser", authenticatedUser);
+   ```
+2. **Authorization Filter consumes the attribute:**
+   ```java
+   User user = (User) request.getAttribute("authenticatedUser");
+   if (!"enterprise".equalsIgnoreCase(user.getTier())) { ... }
+   ```
+3. **Controller & Service consume the attribute directly:**
+   ```java
+   User authenticatedUser = (User) servletRequest.getAttribute("authenticatedUser");
+   ShortenBulkResponse response = service.bulkShortenUrls(bulkRequest, authenticatedUser, apiKey, baseUrl);
+   ```
+4. **Architectural Benefit:** Zero redundant database calls! For an enterprise bulk request, the database is queried exactly **once** for the user record, instead of multiple queries across authentication, authorization, and controller execution.
+
+---
+
+## [Q8] Middleware Chaining & Execution Order
+
+### Question
+*What should be the order of the middlewares that you implemented above (logging, authentication, blacklist, etc.)?*
+
+### Optimal Chaining Order & Architectural Rationale
+
+| Order | Middleware | Priority constant | Architectural Purpose & Rationale |
+|:---:|:---|:---|:---|
+| **1** | **`ResponseTimeFilter`** | `HIGHEST_PRECEDENCE` | **Outermost Wrapper.** Must be first to record the true request start time and last on the return trip to calculate total roundtrip duration (including all middlewares, database access, and controller latency). |
+| **2** | **`RequestLoggingFilter`** | `HIGHEST_PRECEDENCE + 10` | **Observability & Auditing.** Must log all incoming traffic (Method, URL, IP, User-Agent) before security filters run, ensuring that unauthorized or malicious attempts are properly captured for security telemetry. |
+| **3** | **`BlacklistFilter`** | `HIGHEST_PRECEDENCE + 20` | **Fast Malicious Traffic Dropping.** Evaluates the API key against the runtime blacklist config file. Drops abusive clients with HTTP 403 *before* performing costly database lookups. |
+| **4** | **`ApiKeyAuthenticationFilter`** | `HIGHEST_PRECEDENCE + 30` | **Identity Verification & Context Attachment.** Validates the API key against the database, confirms identity, and attaches the `User` object to request attributes (`authenticatedUser`). |
+| **5** | **`TierAuthorizationFilter`** | `HIGHEST_PRECEDENCE + 40` | **Permission & Policy Enforcement.** Innermost guard before the controller. Consumes the attached `User` object to enforce enterprise-tier rules on `/shorten/bulk`. |
+| **6** | **`DispatcherServlet` / Controller** | Endpoint Handler | **Core Business Logic Execution.** Receives a verified, authorized request with pre-loaded user context. |
+
+---
+
+## [Q9 BONUS] Timing Each Middleware for Internal Tracking
+
+### Requirements
+Time each middleware and log how much time each one is taking for internal tracking purposes.
+
+### Implementation
+- **Helper Class:** `com.vyson.urlshortener.filter.MiddlewareTimer`
+- **Internal Micro-Profiling:**
+  Each filter measures its own pre-processing and post-processing latency (excluding time spent waiting for downstream chains) using `System.nanoTime()`:
+  ```java
+  long selfStart = System.nanoTime();
+  // Filter internal work (e.g., blacklist lookup or DB auth)
+  long selfDuration = System.nanoTime() - selfStart;
+  MiddlewareTimer.record(request, "ApiKeyAuthenticationFilter", selfDuration);
+  ```
+- **Logging Breakdown:**
+  `ResponseTimeFilter` logs a comprehensive breakdown before completing the request:
+  ```text
+  [RESPONSE TIME] POST /shorten/bulk -> Status: 201 | Elapsed: 8ms | Timings: [ResponseTimeFilter=0.00ms, BlacklistFilter=0.04ms, ApiKeyAuthenticationFilter=0.65ms, RequestLoggingFilter=0.63ms, Controller=3.41ms, Total=4.73ms]
+  ```
+- **Tracking Header:**
+  Appends the custom HTTP response header `X-Middleware-Timings`:
+  ```http
+  X-Middleware-Timings: ResponseTimeFilter=0.00ms, BlacklistFilter=0.04ms, ApiKeyAuthenticationFilter=0.65ms, RequestLoggingFilter=0.63ms, Controller=3.41ms, Total=4.73ms
+  ```
+
+---
+
+## 🧪 Comprehensive Integration Test Suite (21 Tests)
+
+All middlewares are verified through Spring Boot's `@SpringBootTest` and `MockMvc` test suite:
+- **`UrlShortenerIntegrationTests` (12 Tests):** Validates M2A1 & M2A2 core features, redirects, click tracking, passwords, soft deletes, and bulk creations.
+- **`MiddlewareIntegrationTests` (9 Tests):** Validates Questions Q1 through Q9 BONUS:
+  - `testRequestLoggingMiddlewareSavesToDatabase` [Q1]
+  - `testRouteFilteringSkipsExcludedPaths` [Q2]
+  - `testAuthenticationMiddlewareRejection` [Q3]
+  - `testTierAuthorizationMiddleware` [Q4]
+  - `testBlacklistMiddlewareWithRuntimeReload` [Q5]
+  - `testResponseTimeMiddlewareHeader` [Q6]
+  - `testContextPassingAcrossMiddlewares` [Q7]
+  - `testMiddlewareExecutionOrderAndChaining` [Q8]
+  - `testPerMiddlewareTimingTracker` [Q9 BONUS]
+
+### Test Execution Command
+```bash
+./mvnw test
+```
+**Results:** `Tests run: 21, Failures: 0, Errors: 0, Skipped: 0` (100% Passing).
+

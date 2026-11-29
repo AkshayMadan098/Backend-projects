@@ -10,7 +10,7 @@ Each project is located in its own self-contained directory with dedicated docum
 
 | # | Project | Stack | Key Architectural Features | Live Demo | Status |
 |:---:|:---|:---|:---|:---:|:---:|
-| **01** | [**URL Shortener & Analytics Platform**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite (WAL)**, **Hibernate ORM**, **Docker** | Base62 encoding, **7,300+ req/sec** stress testing, User API keys, Soft deletes, Bulk batch creation, Tiers (Hobby/Enterprise), Expiry dates, Password protection | [**Live API ↗**](https://vyson-url-shortener.onrender.com) | ✅ Complete (M2A1 & M2A2) |
+| **01** | [**URL Shortener & Analytics Platform**](./url-shortener) | **Java 21**, **Spring Boot 3.3**, **SQLite (WAL)**, **Hibernate ORM**, **Docker** | Base62 encoding, **7,300+ req/sec** stress testing, Middlewares (Logging, Auth, Blacklist, Latency header, Profiling), User API keys, Soft deletes, Bulk batch creation, Tiers (Hobby/Enterprise) | [**Live API ↗**](https://vyson-url-shortener.onrender.com) | ✅ Complete (M2A1, M2A2 & M2A3) |
 | **02** | **Auth & RBAC Service** | *Coming Soon* | JWT access/refresh rotation, Redis token blacklist, OAuth2 | — | 🔄 In Progress |
 | **03** | **Real-Time Event Engine** | *Coming Soon* | Kafka / RabbitMQ, WebSocket pub/sub, idempotent consumers | — | 📋 Planned |
 
