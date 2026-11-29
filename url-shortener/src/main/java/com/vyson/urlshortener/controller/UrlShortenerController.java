@@ -1,6 +1,10 @@
 package com.vyson.urlshortener.controller;
 
 import com.vyson.urlshortener.dto.*;
+import com.vyson.urlshortener.entity.RequestLog;
+import com.vyson.urlshortener.entity.User;
+import com.vyson.urlshortener.filter.MiddlewareConstants;
+import com.vyson.urlshortener.repository.RequestLogRepository;
 import com.vyson.urlshortener.service.UrlShortenerService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -17,9 +21,11 @@ import java.util.Map;
 public class UrlShortenerController {
 
     private final UrlShortenerService service;
+    private final RequestLogRepository requestLogRepository;
 
-    public UrlShortenerController(UrlShortenerService service) {
+    public UrlShortenerController(UrlShortenerService service, RequestLogRepository requestLogRepository) {
         this.service = service;
+        this.requestLogRepository = requestLogRepository;
     }
 
     /**
@@ -30,16 +36,17 @@ public class UrlShortenerController {
     public ResponseEntity<Map<String, Object>> root(HttpServletRequest request) {
         String baseUrl = extractBaseUrl(request);
         return ResponseEntity.ok(Map.of(
-                "service", "URL Shortener API (VYSONM2A2)",
+                "service", "URL Shortener API (VYSONM2A3 Middlewares)",
                 "status", "UP",
                 "timestamp", LocalDateTime.now(),
                 "endpoints", Map.of(
                         "POST /shorten", "Shorten URL (supports customCode, expiresAt, password, X-API-Key header)",
-                        "POST /shorten/bulk", "Bulk shorten URLs (Enterprise tier only, requires X-API-Key)",
+                        "POST /shorten/bulk", "Bulk shorten URLs (Enterprise tier only, protected by ApiKey & TierAuthorization middlewares)",
                         "GET /redirect?code={code}", "Redirect to original URL (supports password query/header)",
                         "PUT /shorten/{code}", "Edit short code target URL, expiry date, or password (requires owner X-API-Key)",
                         "DELETE /shorten/{code}", "Soft-delete short code (requires owner X-API-Key)",
                         "GET /users/urls", "List all URLs owned by user (requires X-API-Key)",
+                        "GET /logs", "View recent HTTP request logs stored by RequestLogging middleware",
                         "GET /health", "System health and database check"
                 ),
                 "demoUrl", baseUrl + "/shorten"
@@ -49,7 +56,7 @@ public class UrlShortenerController {
     /**
      * Endpoint 1: POST /shorten
      * Accepts a long URL and returns a shortened code and redirect URL.
-     * M2A2: Supports customCode (Q9), expiresAt (Q8), password (Q14), and owner API key (Q5).
+     * M2A3: Uses pre-authenticated User from request attributes if present (Q7).
      */
     @PostMapping("/shorten")
     public ResponseEntity<ShortenResponse> shortenUrl(
@@ -68,7 +75,8 @@ public class UrlShortenerController {
         }
 
         String baseUrl = extractBaseUrl(servletRequest);
-        ShortenResponse response = service.shortenUrl(effectiveRequest, apiKey, baseUrl);
+        User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ShortenResponse response = service.shortenUrl(effectiveRequest, authenticatedUser, apiKey, baseUrl);
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -76,6 +84,8 @@ public class UrlShortenerController {
     /**
      * [Q10 & Q12] Endpoint 1b: POST /shorten/bulk
      * Bulk creation of short codes. Restricted to Enterprise tier users.
+     * [Q4 & Q7] Authentication and Enterprise tier checks are enforced by middlewares.
+     * Consumes authenticatedUser attribute directly without duplicate DB queries.
      */
     @PostMapping("/shorten/bulk")
     public ResponseEntity<ShortenBulkResponse> bulkShorten(
@@ -84,7 +94,8 @@ public class UrlShortenerController {
             HttpServletRequest servletRequest) {
 
         String baseUrl = extractBaseUrl(servletRequest);
-        ShortenBulkResponse response = service.bulkShortenUrls(bulkRequest, apiKey, baseUrl);
+        User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ShortenBulkResponse response = service.bulkShortenUrls(bulkRequest, authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -100,7 +111,8 @@ public class UrlShortenerController {
             HttpServletRequest servletRequest) {
 
         String baseUrl = extractBaseUrl(servletRequest);
-        ShortenResponse response = service.editShortCode(code, editRequest, apiKey, baseUrl);
+        User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        ShortenResponse response = service.editShortCode(code, editRequest, authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.ok(response);
     }
 
@@ -132,14 +144,16 @@ public class UrlShortenerController {
     public ResponseEntity<Map<String, String>> deleteShortCode(
             @PathVariable(name = "code", required = false) String codePath,
             @RequestParam(name = "code", required = false) String codeParam,
-            @RequestHeader(name = "X-API-Key", required = false) String apiKey) {
+            @RequestHeader(name = "X-API-Key", required = false) String apiKey,
+            HttpServletRequest servletRequest) {
 
         String code = (codePath != null && !codePath.isBlank()) ? codePath : codeParam;
         if (code == null || code.isBlank()) {
             throw new IllegalArgumentException("Short code to delete must be specified in the URL path (/shorten/{code}) or query parameter (/shorten?code={code})");
         }
 
-        service.deleteShortCode(code, apiKey);
+        User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        service.deleteShortCode(code, authenticatedUser, apiKey);
         return ResponseEntity.ok(Map.of(
                 "message", "Short code '" + code + "' deleted successfully",
                 "code", code
@@ -156,8 +170,23 @@ public class UrlShortenerController {
             HttpServletRequest servletRequest) {
 
         String baseUrl = extractBaseUrl(servletRequest);
-        List<ShortenResponse> urls = service.getUserUrls(apiKey, baseUrl);
+        User authenticatedUser = (User) servletRequest.getAttribute(MiddlewareConstants.AUTHENTICATED_USER_ATTR);
+        List<ShortenResponse> urls = service.getUserUrls(authenticatedUser, apiKey, baseUrl);
         return ResponseEntity.ok(urls);
+    }
+
+    /**
+     * [Q1] Endpoint: GET /logs
+     * Returns recent request logs saved by the RequestLoggingFilter in the SQLite database.
+     */
+    @GetMapping("/logs")
+    public ResponseEntity<List<RequestLog>> getRequestLogs(
+            @RequestParam(name = "limit", defaultValue = "50") int limit) {
+        List<RequestLog> logs = requestLogRepository.findAllByOrderByTimestampDesc();
+        if (logs.size() > limit) {
+            logs = logs.subList(0, limit);
+        }
+        return ResponseEntity.ok(logs);
     }
 
     /**

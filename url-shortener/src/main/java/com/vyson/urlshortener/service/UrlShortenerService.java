@@ -42,7 +42,7 @@ public class UrlShortenerService {
      * - [Q14] Supports optional password protection.
      */
     @Transactional
-    public ShortenResponse shortenUrl(ShortenRequest request, String apiKey, String baseUrl) {
+    public ShortenResponse shortenUrl(ShortenRequest request, User authenticatedUser, String apiKey, String baseUrl) {
         if (request == null || request.getUrl() == null || request.getUrl().isBlank()) {
             throw new InvalidUrlException("URL must not be null or blank");
         }
@@ -50,8 +50,8 @@ public class UrlShortenerService {
         validateUrl(request.getUrl());
         String normalizedUrl = request.getUrl().trim();
 
-        // Resolve authenticated user if API key provided (Q5)
-        User owner = resolveUser(apiKey);
+        // [Q7] Resolve authenticated user: reuse user set by middleware if present, else resolve from API key
+        User owner = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
 
         String shortCode;
         if (request.getCustomCode() != null && !request.getCustomCode().isBlank()) {
@@ -78,27 +78,31 @@ public class UrlShortenerService {
         return buildResponse(saved, baseUrl);
     }
 
+    @Transactional
+    public ShortenResponse shortenUrl(ShortenRequest request, String apiKey, String baseUrl) {
+        return shortenUrl(request, null, apiKey, baseUrl);
+    }
+
     /**
      * Backward-compatible helper for basic shorten calls
      */
     @Transactional
     public ShortenResponse shortenUrl(String originalUrl, String baseUrl) {
-        return shortenUrl(new ShortenRequest(originalUrl), null, baseUrl);
+        return shortenUrl(new ShortenRequest(originalUrl), null, null, baseUrl);
     }
 
     /**
      * [Q10 & Q12] Bulk creation of short codes for enterprise users.
+     * [Q7] Consumes pre-authenticated user from middleware attribute to avoid duplicate DB query.
      */
     @Transactional
-    public ShortenBulkResponse bulkShortenUrls(ShortenBulkRequest bulkRequest, String apiKey, String baseUrl) {
-        if (apiKey == null || apiKey.isBlank()) {
+    public ShortenBulkResponse bulkShortenUrls(ShortenBulkRequest bulkRequest, User authenticatedUser, String apiKey, String baseUrl) {
+        User user = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+        if (user == null) {
             throw new InvalidApiKeyException("API key is required for bulk creation");
         }
 
-        User user = userRepository.findByApiKey(apiKey.trim())
-                .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
-
-        // [Q12] Authorization tier check
+        // [Q4 & Q12] Authorization tier check (defense-in-depth with TierAuthorizationFilter)
         if (!"enterprise".equalsIgnoreCase(user.getTier())) {
             throw new ForbiddenAccessException("Bulk creation is only available for enterprise tier users. Please upgrade your plan.");
         }
@@ -117,6 +121,11 @@ public class UrlShortenerService {
         }
 
         return new ShortenBulkResponse(results);
+    }
+
+    @Transactional
+    public ShortenBulkResponse bulkShortenUrls(ShortenBulkRequest bulkRequest, String apiKey, String baseUrl) {
+        return bulkShortenUrls(bulkRequest, null, apiKey, baseUrl);
     }
 
     /**
@@ -161,9 +170,10 @@ public class UrlShortenerService {
 
     /**
      * [Q5] Soft-deletes a URL mapping with user ownership check.
+     * [Q7] Accepts pre-authenticated user from middleware attribute.
      */
     @Transactional
-    public void deleteShortCode(String shortCode, String apiKey) {
+    public void deleteShortCode(String shortCode, User authenticatedUser, String apiKey) {
         if (shortCode == null || shortCode.isBlank()) {
             throw new UrlNotFoundException("Short code cannot be empty");
         }
@@ -173,11 +183,10 @@ public class UrlShortenerService {
 
         // Ownership verification (Q5)
         if (mapping.getUser() != null) {
-            if (apiKey == null || apiKey.isBlank()) {
+            User requestingUser = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+            if (requestingUser == null) {
                 throw new InvalidApiKeyException("API key required to delete this short code");
             }
-            User requestingUser = userRepository.findByApiKey(apiKey.trim())
-                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
 
             if (!mapping.getUser().getId().equals(requestingUser.getId())) {
                 throw new ForbiddenAccessException("You do not own this short code and cannot delete it");
@@ -190,11 +199,17 @@ public class UrlShortenerService {
         repository.save(mapping);
     }
 
+    @Transactional
+    public void deleteShortCode(String shortCode, String apiKey) {
+        deleteShortCode(shortCode, null, apiKey);
+    }
+
     /**
      * [Q13] Allows editing a short code (URL, expiration date, password) with ownership check.
+     * [Q7] Accepts pre-authenticated user from middleware attribute.
      */
     @Transactional
-    public ShortenResponse editShortCode(String shortCode, ShortenEditRequest editRequest, String apiKey, String baseUrl) {
+    public ShortenResponse editShortCode(String shortCode, ShortenEditRequest editRequest, User authenticatedUser, String apiKey, String baseUrl) {
         if (shortCode == null || shortCode.isBlank()) {
             throw new UrlNotFoundException("Short code cannot be empty");
         }
@@ -204,19 +219,17 @@ public class UrlShortenerService {
 
         // Ownership check
         if (mapping.getUser() != null) {
-            if (apiKey == null || apiKey.isBlank()) {
+            User requestingUser = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+            if (requestingUser == null) {
                 throw new InvalidApiKeyException("API key required to edit this short code");
             }
-            User requestingUser = userRepository.findByApiKey(apiKey.trim())
-                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
 
             if (!mapping.getUser().getId().equals(requestingUser.getId())) {
                 throw new ForbiddenAccessException("You do not own this short code and cannot edit it");
             }
-        } else if (apiKey != null && !apiKey.isBlank()) {
+        } else if (authenticatedUser != null || (apiKey != null && !apiKey.isBlank())) {
             // Claim ownership if previously unowned
-            User requestingUser = userRepository.findByApiKey(apiKey.trim())
-                    .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
+            User requestingUser = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
             mapping.setUser(requestingUser);
         }
 
@@ -240,17 +253,21 @@ public class UrlShortenerService {
         return buildResponse(saved, baseUrl);
     }
 
+    @Transactional
+    public ShortenResponse editShortCode(String shortCode, ShortenEditRequest editRequest, String apiKey, String baseUrl) {
+        return editShortCode(shortCode, editRequest, null, apiKey, baseUrl);
+    }
+
     /**
      * [Q15] Retrieves all URLs owned by an authenticated user.
+     * [Q7] Accepts pre-authenticated user from middleware attribute.
      */
     @Transactional(readOnly = true)
-    public List<ShortenResponse> getUserUrls(String apiKey, String baseUrl) {
-        if (apiKey == null || apiKey.isBlank()) {
+    public List<ShortenResponse> getUserUrls(User authenticatedUser, String apiKey, String baseUrl) {
+        User user = authenticatedUser != null ? authenticatedUser : resolveUser(apiKey);
+        if (user == null) {
             throw new InvalidApiKeyException("API key is required to view your URLs");
         }
-
-        User user = userRepository.findByApiKey(apiKey.trim())
-                .orElseThrow(() -> new InvalidApiKeyException("Invalid API key provided"));
 
         List<UrlMapping> mappings = repository.findByUserAndIsDeletedFalseOrderByCreatedAtDesc(user);
         List<ShortenResponse> responses = new ArrayList<>();
@@ -258,6 +275,11 @@ public class UrlShortenerService {
             responses.add(buildResponse(mapping, baseUrl));
         }
         return responses;
+    }
+
+    @Transactional(readOnly = true)
+    public List<ShortenResponse> getUserUrls(String apiKey, String baseUrl) {
+        return getUserUrls(null, apiKey, baseUrl);
     }
 
     /**
