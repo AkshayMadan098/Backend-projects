@@ -11,7 +11,6 @@
 
 - [💡 What is Middleware?](#-what-is-middleware)
 - [🏗️ Middleware Pipeline Architecture](#️-middleware-pipeline-architecture)
-- [📊 Assignment Checklist & Features Summary](#-assignment-checklist--features-summary)
 - [[Q1] Request Logging Middleware](#q1-request-logging-middleware)
 - [[Q2] Route-Specific Middleware Execution](#q2-route-specific-middleware-execution)
 - [[Q3] Authentication Middleware (API Key Validation)](#q3-authentication-middleware-api-key-validation)
@@ -90,22 +89,6 @@ flowchart TD
     
     M1_R -->|"Injects X-Response-Time & X-Middleware-Timings headers"| Response(["🚀 HTTP Response to Client"])
 ```
-
----
-
-## 📊 Assignment Checklist & Features Summary
-
-| Assignment Requirement | Implementation Component | Order Priority | Status |
-|:---|:---|:---:|:---:|
-| **[Q1] Request Logging** (Timestamp, Method, URL, User-Agent, Client IP, SQLite persistence) | `RequestLoggingFilter.java`, `RequestLog.java`, `RequestLogRepository.java` | Order 2 | ✅ Implemented |
-| **[Q2] Route-Specific Execution** (Filter path inclusion & exclusion via AntPathMatcher) | `RequestLoggingFilter.shouldNotFilter()`, `FilterConfig.java` | Config | ✅ Implemented |
-| **[Q3] API Key Authentication** (Short-circuits with 401 on missing/invalid API key) | `ApiKeyAuthenticationFilter.java` | Order 4 | ✅ Implemented |
-| **[Q4] Tier Authorization** (Decoupled Enterprise-only check on `/shorten/bulk`) | `TierAuthorizationFilter.java` | Order 5 | ✅ Implemented |
-| **[Q5] Blacklist Middleware** (Runtime reloading of `config/blacklist.txt` without JVM restart) | `BlacklistFilter.java`, `BlacklistService.java` | Order 3 | ✅ Implemented |
-| **[Q6] Response Time Header** (Injects `X-Response-Time: {ms}ms` header) | `ResponseTimeFilter.java` | Order 1 | ✅ Implemented |
-| **[Q7] Context Passing** (Stores `authenticatedUser` in `request.setAttribute` to prevent duplicate DB calls) | `ApiKeyAuthenticationFilter.java` & `UrlShortenerController.java` | Pipeline | ✅ Implemented |
-| **[Q8] Ordered Chaining Pipeline** (Configured sequence with strict architectural priorities) | `FilterOrderConstants.java`, `FilterConfig.java` | Architecture | ✅ Implemented |
-| **[Q9 BONUS] Per-Middleware Profiling** (Tracks internal durations & injects `X-Middleware-Timings`) | `MiddlewareTimer.java`, `ResponseTimeFilter.java` | Profiler | ✅ Implemented |
 
 ---
 
